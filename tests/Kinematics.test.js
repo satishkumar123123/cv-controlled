@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   calculate3DAngle, calculateAngle, calculateKneeFlexion, calculateHipFlexion,
-  calculateTorsoLean, calculateStanceWidthRatio, classifySquatDepth, estimateJumpHeight
+  calculateTorsoLean, calculateStanceWidthRatio, classifySquatDepth, estimateJumpHeight, midpoint
 } from '../src/analytics/Kinematics.js';
 
 const p = (x, y, z = 0, visibility = 1) => ({ x, y, z, visibility });
@@ -45,6 +45,21 @@ describe('kinematics with confidence and degeneracy checks', () => {
     expect(calculateStanceWidthRatio(p(0, 0), p(0.3, 0.4), 0.25)).toBeCloseTo(2);
     expect(calculateStanceWidthRatio(p(0, 0), p(1, 0), 0)).toBeNull();
     expect(calculateStanceWidthRatio(p(0, 0, 0, 0.5), p(1, 0), 0.2)).toBeNull();
+  });
+  it('preserves null fallbacks for every image-plane input below 0.65 visibility', () => {
+    const hidden = p(0, 0, 0, 0.649), visible = p(0, 1);
+    for (const args of [[hidden, visible], [visible, hidden]]) {
+      expect(midpoint(...args, 2)).toBeNull();
+      expect(calculateTorsoLean(...args)).toBeNull();
+      expect(calculateStanceWidthRatio(...args, 0.2)).toBeNull();
+    }
+    for (const vertex of [0, 1, 2]) {
+      const points = [p(0, -1), p(0, 0), p(1, 0)];
+      points[vertex].visibility = 0.649;
+      expect(calculateAngle(...points)).toBeNull();
+    }
+    expect(classifySquatDepth(null, null, null, null)).toEqual({ depthCategory: null, isHipsAtKneeLevel: null });
+    expect(estimateJumpHeight(null)).toBeNull();
   });
   it.each([
     [40, 40, 'Quarter squat'], [60, 60, 'Quarter squat'],

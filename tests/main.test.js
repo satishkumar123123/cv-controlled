@@ -116,6 +116,29 @@ it('holds duck, releases it on missing input, clears metrics, and preserves cali
   expect(text('state-val')).toBe('Calibrating — hold still: 3s');
 });
 
+it.each([23, 24, 25, 26, 27, 28, 29, 30, 31, 32])('clears all analytics when lower-body landmark %i falls below 0.65', (index) => {
+  for (let t = 0; t <= 200; t += 20) feed(t);
+  for (let t = 220; t <= 720; t += 20) feed(t, points(0.14 * Math.sin(Math.PI * (t - 220) / 500)));
+  for (let t = 740; t <= 800; t += 20) feed(t);
+  expect(Number(text('jump-height'))).toBeGreaterThan(0); // A stale previous value must be cleared too.
+  const unreliable = points();
+  unreliable[index].visibility = 0.649;
+  feed(820, unreliable);
+  for (const id of ['flight-time', 'jump-height', 'vertical-displacement', 'knee-angle', 'hip-angle',
+    'torso-lean', 'stance-width', 'pause-duration', 'squat-depth', 'hips-at-knee-level']) {
+    expect(text(id)).toBe('—');
+  }
+  expect(text('state-val')).toContain('below 0.65 visibility');
+  const metrics = app.game.registry.get('gestureMetrics');
+  expect(metrics).toMatchObject({ valid: false, armed: false, kneeFlexion: null, jumpHeight: null, flightTime: null });
+  expect(app.scene.desiredDuckState).toBe(false);
+  expect(app.scene.setControllerStatus).toHaveBeenLastCalledWith(false, false, expect.any(String));
+  for (let t = 840; t <= 1600; t += 20) feed(t);
+  expect(text('knee-angle')).toBe('0.0'); // Zero is legitimate for reliable standing geometry.
+  expect(text('jump-height')).toBe('—'); // Lost flight history must not reappear.
+  expect(app.scene.jump).toHaveBeenCalledOnce();
+});
+
 it('synchronizes held duck on every pose even after a rejected airborne command', () => {
   app.scene.duck.mockReturnValue(false);
   for (let t = 0; t <= 200; t += 20) feed(t);

@@ -69,6 +69,27 @@ function sceneFixture() {
 }
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
+describe('release restart controls', () => {
+  it('only restarts after collision, preserving keyboard shortcuts and focused controls', () => {
+    const scene = sceneFixture(), restart = vi.spyOn(scene, 'restartGame');
+    const event = { preventDefault: vi.fn(), target: { tagName: 'CANVAS' } };
+    scene._onRestartKey(event);
+    expect(restart).not.toHaveBeenCalled();
+    scene.gameOver();
+    for (const override of [{ repeat: true }, { ctrlKey: true }, { metaKey: true }, { altKey: true },
+      { target: { tagName: 'INPUT' } }, { target: { tagName: 'BUTTON' } }, { target: { isContentEditable: true } }]) {
+      scene._onRestartKey({ ...event, ...override });
+    }
+    expect(restart).not.toHaveBeenCalled();
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    scene._onRestartKey(event);
+    expect(restart).toHaveBeenCalledOnce();
+    expect(event.preventDefault).toHaveBeenCalledOnce();
+    expect(scene.runState).toBe('WAITING');
+    expect(scene.score).toBe(0);
+  });
+});
+
 describe('audit bug 1: held duck reconciles on virtual landing', () => {
   it('remembers a rejected airborne duck and applies its hitbox without another edge event', () => {
     const scene = sceneFixture();

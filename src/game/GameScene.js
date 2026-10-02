@@ -60,7 +60,7 @@ export class GameScene extends Phaser.Scene {
     this.overlayMessage = this.add.text(320, 210, '', {
       ...textStyle, fontSize: '16px', align: 'center', wordWrap: { width: 440 }
     }).setOrigin(0.5);
-    this.restartPrompt = this.add.text(320, 277, 'Restart  [SPACE]', {
+    this.restartPrompt = this.add.text(320, 277, 'Restart  [R / SPACE]', {
       ...textStyle, fontSize: '18px', color: '#22c55e', backgroundColor: '#1e293b', padding: { x: 16, y: 10 }
     }).setOrigin(0.5).setInteractive({ useHandCursor: true }).on('pointerdown', () => this.restartGame());
     this.recalibratePrompt = this.add.text(320, 328, 'Recalibrate / Restart', {
@@ -71,7 +71,8 @@ export class GameScene extends Phaser.Scene {
       this.overlayTitle, this.overlayMessage, this.restartPrompt, this.recalibratePrompt
     ]).setDepth(20);
 
-    this.input.keyboard?.on('keydown-SPACE', this._onSpace, this);
+    this.input.keyboard?.on('keydown-SPACE', this._onRestartKey, this);
+    this.input.keyboard?.on('keydown-R', this._onRestartKey, this);
     this.game.events.on(Phaser.Core.Events.BLUR, this._onBlur, this);
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, this._shutdown, this);
     this._resetRun();
@@ -298,8 +299,10 @@ export class GameScene extends Phaser.Scene {
     this.overlay.setVisible(true);
   }
 
-  _onSpace(event) {
-    if (event.repeat || /^(INPUT|TEXTAREA|SELECT|BUTTON)$/.test(event.target?.tagName) || event.target?.isContentEditable) return;
+  _onRestartKey(event) {
+    // Keep browser shortcuts (e.g. Ctrl/Cmd+R) and focused UI controls intact.
+    if (event.repeat || event.ctrlKey || event.metaKey || event.altKey ||
+        /^(INPUT|TEXTAREA|SELECT|BUTTON)$/.test(event.target?.tagName) || event.target?.isContentEditable) return;
     if (this.runState === RunState.GAME_OVER) {
       event.preventDefault();
       this.restartGame();
@@ -323,7 +326,8 @@ export class GameScene extends Phaser.Scene {
 
   _shutdown() {
     this.saveHighScore();
-    this.input.keyboard?.off('keydown-SPACE', this._onSpace, this);
+    this.input.keyboard?.off('keydown-SPACE', this._onRestartKey, this);
+    this.input.keyboard?.off('keydown-R', this._onRestartKey, this);
     this.game.events.off(Phaser.Core.Events.BLUR, this._onBlur, this);
     if (this.groundCollider?.world) this.groundCollider.destroy();
     if (this.obstacleCollider?.world) this.obstacleCollider.destroy();

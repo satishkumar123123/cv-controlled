@@ -141,10 +141,12 @@ mkdirSync(OUTPUT, { recursive: true });
 
       const displayCount = s.children.list.length;
       const keyListeners = s.input.keyboard.listenerCount('keydown-SPACE');
+      const rListeners = s.input.keyboard.listenerCount('keydown-R');
       const restartListeners = s.game.events.listenerCount('runner:restartRequested');
       for (let i = 0; i < 40; i++) fresh();
       check(s.children.list.length === displayCount && s.obstacles.getLength() === 8 &&
         s.input.keyboard.listenerCount('keydown-SPACE') === keyListeners &&
+        s.input.keyboard.listenerCount('keydown-R') === rListeners &&
         s.game.events.listenerCount('runner:restartRequested') === restartListeners,
         '40 restarts preserve pool, display list and listener counts');
 
@@ -231,6 +233,15 @@ mkdirSync(OUTPUT, { recursive: true });
     await page.waitForFunction(() => window.game.scene.getScene('GameScene').runState === 'WAITING');
     assert.equal(await page.evaluate(() => window.game.scene.getScene('GameScene').score), 0);
     console.log('PASS: real keyboard Space restarts game');
+    await page.evaluate(() => {
+      const scene = window.game.scene.getScene('GameScene');
+      scene.setControllerStatus(true, true);
+      scene.gameOver();
+    });
+    await page.keyboard.press('r');
+    await page.waitForFunction(() => window.game.scene.getScene('GameScene').runState === 'WAITING');
+    assert.equal(await page.evaluate(() => window.game.scene.getScene('GameScene').score), 0);
+    console.log('PASS: real keyboard R restarts game');
     await page.reload();
     await page.waitForFunction(() => window.game?.scene.getScene('GameScene')?.overlay);
     assert.ok(await page.evaluate(() => window.game.scene.getScene('GameScene').highScore) >= results.highScore);
@@ -265,6 +276,7 @@ mkdirSync(OUTPUT, { recursive: true });
       return s.player !== window.oldPlayerForCheck && s.obstacles.getLength() === 8;
     });
     assert.equal(await page.evaluate(() => window.game.scene.getScene('GameScene').input.keyboard.listenerCount('keydown-SPACE')), 1);
+    assert.equal(await page.evaluate(() => window.game.scene.getScene('GameScene').input.keyboard.listenerCount('keydown-R')), 1);
     console.log('PASS: scene shutdown/recreation cleans up listeners and bodies');
     // Exercise the new browser frame callback with an actual video source. This
     // is a generated canvas stream, NOT a webcam/model performance benchmark.
@@ -325,6 +337,18 @@ mkdirSync(OUTPUT, { recursive: true });
     });
     await page.getByRole('button', { name: 'Log performance summary', exact: true }).click();
     await page.screenshot({ path: OUTPUT + '/runner-performance.png', fullPage: true });
+    await page.evaluate(() => {
+      const registry = window.game.registry;
+      const points = registry.get('poseLandmarks').map(point => point && { ...point });
+      points[25].visibility = 0.649;
+      window.poseTracker.onPoseUpdate(points, registry.get('poseBaseline'), { timestamp: performance.now(), aspectRatio: 1 });
+      for (const id of ['flight-time', 'jump-height', 'vertical-displacement', 'knee-angle', 'hip-angle',
+        'torso-lean', 'stance-width', 'pause-duration', 'squat-depth', 'hips-at-knee-level']) {
+        if (document.getElementById(id).textContent !== '—') throw Error('Unreliable metric displayed: ' + id);
+      }
+      if (window.game.scene.getScene('GameScene').runState !== 'PAUSED') throw Error('Occlusion did not pause gameplay');
+    });
+    console.log('PASS: real analytics DOM clears unreliable lower-body metrics and pauses gameplay');
     await page.getByRole('button', { name: 'Reset sample', exact: true }).click();
     assert.equal(await page.evaluate(() => window.performanceMonitor.getSummary().processedFrames), 0);
     await page.evaluate(() => window.poseTracker.onStreamStateChange({ active: false }));

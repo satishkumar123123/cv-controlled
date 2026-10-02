@@ -1,0 +1,78 @@
+{
+  "measuredAt": "2026-10-02T13:26:29.160Z",
+  "pipelineCommit": "723fad281cf1b991bd4022146694b45fe087f84c",
+  "protocol": {
+    "warmupSeconds": 10,
+    "requestedSampleSeconds": 30,
+    "input": "Chromium fake-device video, no reliable human pose",
+    "backend": "Software WebGL via ANGLE SwiftShader",
+    "assets": "Self-hosted installed @mediapipe/pose package",
+    "limitations": "One container trial. Not a physical-webcam, hardware-GPU, ARM, or accepted-action benchmark."
+  },
+  "browser": "153.0.8010.0",
+  "host": {
+    "platform": "linux",
+    "release": "6.18.44",
+    "arch": "x64",
+    "cpu": "AMD EPYC 9V74 80-Core Processor",
+    "logicalCpus": 8,
+    "node": "v24.19.0"
+  },
+  "report": {
+    "schemaVersion": 1,
+    "reportedAt": "2026-10-02T13:26:29.143Z",
+    "model": {
+      "name": "MediaPipe Pose Lite",
+      "version": "0.5.1675469404",
+      "complexity": 0
+    },
+    "hardware": {
+      "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.8010.0 Safari/537.36",
+      "platform": "Linux",
+      "logicalCores": 9,
+      "approximateMemoryGiB": 8,
+      "note": "Browser values may be reduced for privacy. Add CPU, GPU, RAM and OS version in hardwareNotes.",
+      "hardwareNotes": "Synthetic Chromium camera; ANGLE SwiftShader software WebGL; no physical webcam or reliable human pose."
+    },
+    "camera": {
+      "width": 640,
+      "height": 480,
+      "frameRate": 20
+    },
+    "activeSeconds": 30.134299999999815,
+    "processedFrames": 99,
+    "averageFps": 3.2852928390571745,
+    "averageInferenceMs": 298.5666666666441,
+    "maxInferenceMs": 500.5,
+    "acceptedActions": 0,
+    "actions": {
+      "JUMP": 0,
+      "DUCK_START": 0,
+      "DUCK_END": 0
+    },
+    "averageActionLatencyMs": null,
+    "maxActionLatencyMs": null,
+    "captureSources": {
+      "camera-capture": 99,
+      "video-presentation": 0,
+      "frame-acquisition": 0
+    },
+    "staleInferenceFrames": 1,
+    "definitions": {
+      "inference": "pose.send start to onResults entry; includes SDK/GPU transfer and scheduling, excludes drawing/classification.",
+      "action": "Triggering frame timestamp to accepted Phaser state mutation; excludes earlier debounce frames and display scanout.",
+      "capture": "camera-capture when exposed; otherwise video-presentation or frame-acquisition is a browser timestamp estimate.",
+      "fps": "Completed model results / visible active camera seconds, including calibration, no-pose results and stalls. Not render FPS."
+    }
+  },
+  "inferenceMs": {
+    "min": 257.39999999990687,
+    "median": 290.60000000009313,
+    "p95": 370.20000000018626,
+    "max": 500.5,
+    "count": 99
+  },
+  "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+  "state": "Tracking lost — show shoulders, hips, knees and both feet.",
+  "errors": []
+}

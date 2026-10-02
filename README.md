@@ -34,6 +34,33 @@ in browser settings and retry. Close other applications using the webcam if it
 is busy. Embedded deployments must also allow camera access in their iframe and
 Permissions Policy. The first model load needs internet access by default.
 
+## Quick Demo & Testing Guide
+
+1. **Frame the player:** start about **2–2.5 meters** from a fixed webcam in good
+   lighting. Adjust for its field of view until shoulders, hips, knees, heels
+   and toes are visible, with room above your head for a jump.
+2. **Calibrate:** click **Start camera**, allow camera access, and stand still
+   in neutral for the **3-second** countdown. Wait for `NEUTRAL` and the game to
+   start; movement, occlusion or a failed neutral check restarts calibration.
+3. **Jump test:** make one standard jump as a **red low obstacle** approaches.
+   Expect one in-game jump, then `LANDING_COOLDOWN` on landing. The landing knee
+   bend should not produce a duck. Stand neutrally to rearm.
+4. **Duck test:** perform a comfortable **parallel/full squat** for a **purple
+   high barrier**, and hold until it passes. The character should stay gold with
+   its short hitbox, then stand when you rise. The game's duck trigger uses hip
+   drop and knee bend; it does not require a particular squat-depth label.
+5. **Occlusion test:** briefly move a foot out of frame. Expect tracking to pause
+   and movement metrics to show **—** (unavailable), with no false jump/duck or
+   stale jump height. Return fully into view and stand still to resume.
+6. **Restart:** after collision, click the game and press **R** (or **Space**),
+   or click **Restart run** / the canvas **Restart** prompt. Return to neutral.
+   Use **Recalibrate / Restart** if the camera or your standing position changes.
+
+For an automated evaluator check, run `npm run test` and `npm run build`.
+For a real-device performance record, use **Reset sample** and **Log performance
+summary** with the benchmark protocol below; demo success alone is not a latency
+measurement.
+
 ## Playing and calibration
 
 1. Keep one person fully in frame: shoulders, hips, knees, ankles, heels and toes.
@@ -46,8 +73,9 @@ Permissions Policy. The first model load needs internet access by default.
    the controller then arms and the game starts automatically.
    Jump for red hurdles; duck for purple barriers and stay down until clear.
 4. On collision, click **Restart run**, the canvas **Restart** prompt, or press
-   **Space**. Choose **Recalibrate / Restart** after moving the camera, changing
-   distance/orientation or switching players. Space only restarts after game over.
+   **R** or **Space**. Choose **Recalibrate / Restart** after moving the camera,
+   changing distance/orientation or switching players. These keys only restart
+   after game over; focused form controls and browser shortcuts are preserved.
 5. **Stop camera** releases capture. Missing tracking pauses gameplay and score;
    fresh, stable neutral input is required to resume.
 
@@ -201,6 +229,11 @@ $$\theta(a,b,c)=\frac{180}{\pi}\cos^{-1}\left(
 Zero-length segments, missing/non-finite coordinates and landmarks with
 visibility <0.65 return `null`; the classifier publishes `valid: false` when
 required geometry is unavailable. Unknown values display as **—**, not zero.
+Losing any required hip, knee, ankle, heel or toe clears all movement fields,
+including previous flight/jump values, and shows the tracking-loss reason in
+the state field. Processing FPS/inference timing can remain available because
+model processing continues during occlusion. A reliable straight knee can
+legitimately display 0°; an occluded knee must display **—**.
 
 - **Knee flexion:** `180° − θ(hip, knee, ankle)`. A straight leg is 0°;
   a right-angle bend is 90°. The dashboard averages the two knees.
@@ -264,6 +297,41 @@ displayed separately in the HUD. This label alone never triggers ducking:
 the FSM still requires grounded feet, hip drop and debounce.
 
 ## Performance and latency profiling
+
+### Benchmark & Performance Table
+
+**Recorded test, 2026-10-02:** legacy **MediaPipe Pose Lite
+`@mediapipe/pose@0.5.1675469404`**, WebAssembly with **software WebGL** via ANGLE
+SwiftShader. This project does not currently use the Tasks-Vision API.
+After a 10 s warm-up, one 30.13 s trial processed 99 frames from Chromium's
+640×480, 20 Hz generated camera source, which contains no reliably tracked
+person. See the [raw benchmark record](benchmarks/2026-10-02-software-webgl.json).
+
+| Metric | Actual measured result | Scope |
+| --- | --- | --- |
+| Model inference latency | **257.4–500.5 ms**, mean **298.6 ms**, median **290.6 ms**, p95 **370.2 ms** | `pose.send()` → `onResults`; includes one stale inference |
+| End-to-end action latency | **Not measured — 0 accepted actions** | No reliable human pose; no action-latency result can be inferred |
+| Camera processing FPS | **3.29 FPS** | 99 completed results / 30.13 active seconds; synthetic source itself reported 20 Hz |
+| Tested system | Linux 6.18.44 x86_64; host-reported AMD EPYC 9V74, 8 available logical CPUs; Chromium 153.0.8010.0; ANGLE SwiftShader | Container, software rendering; no physical webcam or hardware GPU; ARM not tested |
+
+This run does **not** meet the 30 FPS goal and does not establish real-person
+tracking performance. It records the available test environment honestly;
+hardware-accelerated laptop/desktop measurements remain to be collected.
+
+The requested ranges below are **unverified reference ranges**, not results
+from this repository's tests:
+
+| Requested reference | Range / target profile | Validation still needed |
+| --- | --- | --- |
+| Inference latency | ~18–32 ms | Measure this pinned Pose model on the target device; Tasks-Vision results cannot be attributed to this implementation |
+| End-to-end action latency | ~35–55 ms | Unverified; cannot describe the full debounce-inclusive duck path, whose debounce alone is 120 ms |
+| Camera processing FPS | 30–60 FPS with a 30/60 Hz USB or integrated webcam | Source frame rate is an upper bound, not achieved inference throughput; sequential processing must also fit its frame budget |
+| Target system profile | Modern multi-core x86_64 or ARM; Chrome/Chromium with hardware acceleration | Record exact CPU/GPU, OS, browser, camera and actual rendering backend; no accelerated x86_64 or ARM benchmark is claimed here |
+
+The current action profiler measures the **debounce-completing frame** through
+accepted Phaser dispatch. A full motion/candidate-onset → dispatch measurement
+would additionally include EMA history and **35 ms jump / 120 ms duck debounce**;
+it is a different metric. The boundaries and repeatable device protocol follow.
 
 The small **Live performance** HUD refreshes four times per second; measurement
 occurs on every completed inference. `window.performanceMonitor` exposes
@@ -331,10 +399,10 @@ No accepted action means a null action average, never a fabricated zero.
    `acceptedActions`. Retain capture-source counts and actual camera settings.
    Do not treat trials without accepted actions as action-latency measurements.
 
-**Performance status:** live hardware measurements are pending. This repository
-does **not** claim 30/60 FPS, a latency target or clinical angle accuracy from
-synthetic tests. The profiler supplies the measurements needed for a real-device
-submission; populate them using the protocol above.
+**Performance status:** the software-WebGL synthetic-camera result is recorded
+above. Physical-webcam, hardware-accelerated and accepted-action measurements
+remain pending. Run the protocol above on the intended machine before claiming
+30/60 FPS, the requested latency ranges or real-person detection accuracy.
 
 ## Game mechanics and integration API
 
@@ -404,8 +472,8 @@ releases capture; hot-module disposal removes timers and listeners.
 | `tests/GestureClassifier.test.js` | Jump → cooldown → neutral and duck → neutral sequences, landing-bend suppression, no simultaneous jump/duck, debounce, pause, visibility loss, timestamp gaps, world-coordinate selection, 30/60 FPS synthetic sampling |
 | `tests/PoseTracker.test.js` | Stillness calibration, raw visibility gate, EMA, canvas calls, camera failure/retry/cleanup, sequential scheduling, capture timestamp fallbacks and inference timing before consumers |
 | `tests/PerformanceMonitor.test.js` | Known clock intervals, processing FPS, action/frame pairing, invalid samples, stale results, pauses, resets, bounded storage and hardware summaries |
-| `tests/main.test.js` | Real classifier wired to mocked Phaser/DOM, command acceptance, HUD metrics, summary/reset controls, safety-release exclusion and visibility handling |
-| `tests/RegressionAudit.test.js` | Held airborne duck and cancellation, provisional landing bends/cooldown, divergent heel/toe calibration and immediate arming, raw noise/self-check failure, high-barrier ballistic intersection, independent squat category/knee-level flag |
+| `tests/main.test.js` | Real classifier wired to mocked Phaser/DOM, command acceptance, HUD metrics, summary/reset controls, and clearing stale values for each of the ten lower-body landmarks below 0.65 visibility |
+| `tests/RegressionAudit.test.js` | Held airborne duck and cancellation, provisional landing bends/cooldown, divergent heel/toe calibration and immediate arming, raw noise/self-check failure, high-barrier ballistic intersection, independent squat category/knee-level flag, restart keyboard guards |
 
 For actual Phaser/browser integration checks (optional extra tooling):
 
@@ -420,6 +488,8 @@ to a temporary directory. Environment overrides: `PLAYWRIGHT_MODULE`,
 `RUNNER_CHROMIUM_EXECUTABLE`, `RUNNER_SCREENSHOT_DIR`. The checks exercise real
 collision bodies, jump/duck clearance, standing restoration, score persistence,
 restart controls, protection, 40 restarts and five minutes of simulated survival.
+Both **R** and **Space** restart keys are checked in the browser, as are listener
+cleanup and unavailable-metric rendering in the real analytics DOM.
 They also test a native video callback with a generated canvas stream and pair
 synthetic pose frames with accepted real Phaser actions and the performance HUD.
 Audit regressions exercise max-speed high-barrier collisions at three jump
@@ -427,7 +497,7 @@ timings, same-step landing/duck/obstacle ordering, and a short physical jump
 followed by a rejected duck edge through the real classifier/main/Phaser stack.
 These are integration checks, **not webcam/model inference benchmarks**.
 
-Verification on 2026-10-02: **135 Vitest tests passed**, production build passed,
+Verification on 2026-10-02: **147 Vitest tests passed**, production build passed,
 and the browser suite passed with no JavaScript errors. Environment: Linux
 6.18.44 x86_64 container, AMD EPYC 9V74 host-reported CPU, 8 available logical
 processors, Node.js 24.19.0, Chromium 153 using software WebGL. No physical
