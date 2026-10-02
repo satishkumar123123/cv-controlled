@@ -7,7 +7,7 @@ export const RUNNER = Object.freeze({
   BASE_SPEED: 220, MAX_SPEED: 360, SPEED_PER_POINT: 0.15,
   PIXELS_PER_POINT: 10, POOL_SIZE: 8, RESTORE_MS: 90,
   INVULNERABLE_MS: 1500, MIN_RECOVERY_SECONDS: 2.2, MAX_RECOVERY_SECONDS: 3,
-  HIGH_CLEARANCE: 36, HIGH_HEIGHT: 32, STORAGE_KEY: 'cv-runner.highScore.v1'
+  HIGH_CLEARANCE: 38, STORAGE_KEY: 'cv-runner.highScore.v1'
 });
 export const RunState = Object.freeze({ WAITING: 'WAITING', RUNNING: 'RUNNING', PAUSED: 'PAUSED', GAME_OVER: 'GAME_OVER' });
 export const speedForScore = (score) => Math.min(RUNNER.MAX_SPEED, RUNNER.BASE_SPEED + Math.max(0, score) * RUNNER.SPEED_PER_POINT);
@@ -16,7 +16,7 @@ export const speedForScore = (score) => Math.min(RUNNER.MAX_SPEED, RUNNER.BASE_S
 export const minimumObstacleGap = () => RUNNER.MAX_SPEED * RUNNER.MIN_RECOVERY_SECONDS + RUNNER.PLAYER_WIDTH;
 
 export class GameScene extends Phaser.Scene {
-  constructor() { super('GameScene'); }
+  constructor() { super('GameScene'); this.desiredDuckState = false; }
 
   create() {
     this.cameras.main.setBackgroundColor('#0f172a');
@@ -38,7 +38,9 @@ export class GameScene extends Phaser.Scene {
       .setStrokeStyle(2, 0xe2e8f0).setDepth(3);
     this.physics.add.existing(this.player);
     this.player.body.setMaxVelocity(0, 1000);
-    this.groundCollider = this.physics.add.collider(this.player, this.ground);
+    // Reconcile before obstacle overlaps in this physics step, not one frame
+    // after landing beside a barrier. update() also handles resting contact.
+    this.groundCollider = this.physics.add.collider(this.player, this.ground, this._reconcileDuckState, undefined, this);
 
     this.obstacles = this.physics.add.group({ allowGravity: false, immovable: true, maxSize: RUNNER.POOL_SIZE });
     // Preallocate a bounded pool. Recycle hidden bodies; never allocate per spawn.
@@ -89,6 +91,7 @@ export class GameScene extends Phaser.Scene {
     this._distanceUntilSpawn = RUNNER.BASE_SPEED * 1.5;
     this._lastDrawnScore = -1;
     this.isDucking = false;
+    this.desiredDuckState = false;
     this._restoring = false;
     this._jumpActive = false;
     for (const obstacle of this.obstacles.getChildren()) this._recycle(obstacle);
@@ -105,6 +108,7 @@ export class GameScene extends Phaser.Scene {
   setControllerStatus(valid, neutral = false, reason = '') {
     this._controllerValid = Boolean(valid);
     this._controllerNeutral = Boolean(valid && neutral);
+    if (!valid) this.duck(false); // Clear a pending airborne duck on tracking loss.
     if (!this.player || this.runState === RunState.GAME_OVER) return;
     if (!valid && this.runState === RunState.RUNNING) {
       this.runState = RunState.PAUSED;
@@ -122,7 +126,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   jump() {
-    if (this.runState !== RunState.RUNNING || !this._controllerValid || this.isDucking ||
+    if (this.runState !== RunState.RUNNING || !this._controllerValid || this.isDucking || this.desiredDuckState ||
         this._jumpActive || !this._isGrounded()) return false;
     this._restoring = false;
     this._resizePlayer(RUNNER.STAND_HEIGHT);
@@ -133,9 +137,12 @@ export class GameScene extends Phaser.Scene {
   }
 
   duck(isDucking) {
+    if (!isDucking) this.desiredDuckState = false;
     if (!this.player?.body || ![RunState.RUNNING, RunState.PAUSED].includes(this.runState)) return false;
     if (isDucking) {
-      if (this.runState !== RunState.RUNNING || !this._controllerValid || this._jumpActive || !this._isGrounded()) return false;
+      if (this.runState !== RunState.RUNNING || !this._controllerValid) return false;
+      this.desiredDuckState = true;
+      if (this._jumpActive || !this._isGrounded()) return false;
       this.isDucking = true;
       this._restoring = false;
       this._resizePlayer(RUNNER.DUCK_HEIGHT);
@@ -145,6 +152,13 @@ export class GameScene extends Phaser.Scene {
       this._restoring = true; // Grow body and visual together over 90 ms.
     }
     return true;
+  }
+
+  _reconcileDuckState() {
+    if (!this._isGrounded()) return;
+    this._jumpActive = false;
+    if (this.desiredDuckState && !this.isDucking) this.duck(true);
+    else if (!this.desiredDuckState && this.isDucking) this.duck(false);
   }
 
   _resizePlayer(height) {
@@ -171,8 +185,9 @@ export class GameScene extends Phaser.Scene {
     if (!obstacle) return null;
     const high = kind === 'HIGH';
     const width = high ? Phaser.Math.Between(92, 108) : Phaser.Math.Between(34, 44);
-    const height = high ? RUNNER.HIGH_HEIGHT : Phaser.Math.Between(35, 45);
     const bottom = high ? RUNNER.GROUND_Y - RUNNER.HIGH_CLEARANCE : RUNNER.GROUND_Y;
+    // A ceiling-to-clearance barrier has no route above it, at any scroll speed.
+    const height = high ? bottom : Phaser.Math.Between(35, 45);
     obstacle.kind = kind;
     obstacle.setSize(width, height).setDisplaySize(width, height)
       .setFillStyle(high ? 0xa78bfa : 0xef4444).setStrokeStyle(2, high ? 0x67e8f9 : 0xfecaca)
@@ -202,6 +217,7 @@ export class GameScene extends Phaser.Scene {
     this.highScore = Math.max(this.highScore, this.score);
     this._scrollGround();
 
+    this._reconcileDuckState();
     if (this._restoring) {
       const height = Math.min(RUNNER.STAND_HEIGHT, this.player.height +
         (RUNNER.STAND_HEIGHT - RUNNER.DUCK_HEIGHT) * elapsed / RUNNER.RESTORE_MS);
@@ -254,6 +270,7 @@ export class GameScene extends Phaser.Scene {
   gameOver() {
     if (this.runState !== RunState.RUNNING) return;
     this.runState = RunState.GAME_OVER;
+    this.desiredDuckState = false;
     this.physics.pause(); // Stops collisions, falling and every pooled obstacle.
     this.player.setAlpha(1);
     this.saveHighScore();

@@ -103,15 +103,50 @@ it('holds duck, releases it on missing input, clears metrics, and preserves cali
   for (let t = 0; t <= 200; t += 20) feed(t);
   for (let t = 220; t <= 1000; t += 20) feed(t, points(0, true));
   expect(app.scene.duck.mock.calls).toEqual([[true]]);
+  expect(app.scene.desiredDuckState).toBe(true);
   expect(Number(text('pause-duration'))).toBeGreaterThan(0.2);
   feed(1020, null);
   expect(app.scene.duck.mock.calls).toEqual([[true], [false]]);
+  expect(app.scene.desiredDuckState).toBe(false);
   expect(text('knee-angle')).toBe('—');
   expect(text('pause-duration')).toBe('—');
   expect(app.scene.jump).not.toHaveBeenCalled();
   app.tracker.callbacks.onPoseUpdate(null, null);
   app.tracker.callbacks.onStatusChange('Calibrating — hold still: 3s');
   expect(text('state-val')).toBe('Calibrating — hold still: 3s');
+});
+
+it('synchronizes held duck on every pose even after a rejected airborne command', () => {
+  app.scene.duck.mockReturnValue(false);
+  for (let t = 0; t <= 200; t += 20) feed(t);
+  for (let t = 220; t <= 500; t += 20) feed(t, points(0, true));
+  expect(app.scene.duck.mock.calls).toEqual([[true]]);
+  expect(app.scene.desiredDuckState).toBe(true);
+  app.scene.desiredDuckState = false;
+  feed(520, points(0, true));
+  expect(app.scene.desiredDuckState).toBe(true);
+  expect(app.scene.duck).toHaveBeenCalledOnce();
+  for (let t = 540; t <= 1100; t += 20) feed(t);
+  expect(app.scene.desiredDuckState).toBe(false);
+  expect(text('squat-depth')).toBe('Standing');
+  expect(text('hips-at-knee-level')).toBe('No');
+});
+
+it('uses verified calibration history to arm immediately and restart still disarms', () => {
+  const calibrated = { ...baseline, baselineLeftHeelY: 0.84, baselineRightHeelY: 0.84,
+    baselineLeftToeY: 0.90, baselineRightToeY: 0.90 };
+  const samples = [2800, 2850, 2900, 2950, 3000].map((timestamp) => {
+    const landmarks = points();
+    landmarks[29].y = landmarks[30].y = 0.84;
+    landmarks[31].y = landmarks[32].y = 0.90;
+    return { landmarks, frame: { timestamp, aspectRatio: 1 } };
+  });
+  app.tracker.callbacks.onCalibrationComplete(calibrated, samples);
+  expect(window.gestureClassifier.metrics).toMatchObject({ armed: true, state: 'NEUTRAL', valid: true });
+  expect(app.scene.setControllerStatus).toHaveBeenLastCalledWith(true, true, null);
+  app.game.events.emit('runner:restartRequested', { recalibrate: false });
+  expect(window.gestureClassifier.metrics.armed).toBe(false);
+  expect(app.scene.desiredDuckState).toBe(false);
 });
 
 it('does not queue actions if the game scene is not ready', () => {
