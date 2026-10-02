@@ -2,6 +2,44 @@
 
 A webcam pose-estimation controlled 2D endless runner built with Phaser 3 and MediaPipe.
 
+## Playing the runner
+
+1. Start the app and camera, complete calibration, and hold a neutral standing
+   pose. Gameplay waits until the CV controller is ready.
+2. Physically **jump** over red ground hurdles. Physically **duck and hold** to
+   pass below purple overhead barriers. The HUD previews the next movement.
+3. A hit freezes the run and shows the final score. Click **Restart run**, click
+   the canvas **Restart** prompt, or press **Space** after game over. Choose
+   **Recalibrate / Restart** if your position or camera has changed.
+4. Return to neutral to begin the next run. Camera tracking loss pauses physics,
+   scrolling and score until valid neutral input returns.
+
+The score is distance travelled divided by 10, rounded down. Best score persists
+under `cv-runner.highScore.v1` in localStorage; denied or malformed storage does
+not prevent play. Scroll speed ramps from 220 to 360 px/s as score increases.
+Restart and tracking recovery provide 1.5 seconds of invulnerability, indicated
+by a flashing player. Gameplay has no external art assets or asset-load delay.
+
+Gameplay configuration lives in the exported `RUNNER` constants in
+`src/game/GameScene.js`:
+
+| Parameter | Value |
+| --- | --- |
+| Standing / airborne body | 30 × 60 px |
+| Duck body | 30 × 28 px, feet anchored; 90 ms standing restoration |
+| Jump velocity / world gravity | -600 px/s / 1400 px/s² |
+| Low hurdles | 35–45 px high, 34–44 px wide |
+| High barriers | 32 px high, lower edge 36 px above the ground |
+| Obstacle pool | 8 reusable Arcade Physics rectangles |
+| Recovery spacing | At least 2.2 seconds between clearing one obstacle and reaching the next, sized using maximum speed and player width |
+
+`GameScene.jump()` and `duck(isDucking)` return whether the command was accepted.
+`restartGame({ recalibrate: false })` resets the same scene and its pool, emits
+`runner:restartRequested`, and waits for fresh neutral input. The main module
+resets classifier history on this event. `setControllerStatus(valid, neutral,
+reason)` handles waiting/pause/resume; `gameOver()` freezes physics and spawning.
+Space only restarts after game over; jumping and ducking remain CV-controlled.
+
 ## Setup Instructions
 
 1. Install dependencies:
@@ -140,6 +178,26 @@ Coordinate and measurement references:
   sequences sampled at 30/60 FPS, landing recovery, tracking loss, calibration,
   filtering, rendering calls, mocked camera lifecycle and game/DOM integration.
 - `npm run build` verifies the Vite production bundle.
-- Physical-webcam performance, real-person calibration reliability and browser
-  WASM/WebGL execution still need testing on the target machine. No FPS or
+- Physical-webcam performance, real-person calibration reliability and MediaPipe
+  WASM/WebGL inference still need testing on the target machine. No FPS or
   real-world accuracy result is claimed by these automated tests.
+
+### Optional real-browser gameplay checks
+
+The browser suite exercises actual Phaser collision bodies, hurdle jumping,
+barrier ducking, restoration, invulnerability timing, tracking pauses, score
+persistence, keyboard/pointer/DOM restart controls and scene cleanup. It also
+simulates five minutes of gameplay and 40 restarts to check pool/listener counts.
+It uses synthetic controller readiness and scripted movement, not a real webcam.
+
+```bash
+npm install --no-save --package-lock=false playwright
+npx playwright install chromium
+npm run test:browser
+```
+
+The suite starts its own Vite server on port 3099 and writes screenshots to a
+temporary directory. `PLAYWRIGHT_MODULE`, `RUNNER_CHROMIUM_EXECUTABLE`, and
+`RUNNER_SCREENSHOT_DIR` can override the tooling/browser/output paths for CI.
+The gameplay suite passed on Chromium 153 with no browser JavaScript errors;
+85 unit/integration tests and the production build also passed.

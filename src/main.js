@@ -11,7 +11,7 @@ const config = {
   parent: 'game-container',
   physics: {
     default: 'arcade',
-    arcade: { gravity: { y: 1200 }, debug: false }
+    arcade: { gravity: { y: 1400 }, debug: false }
   },
   scene: [GameScene]
 };
@@ -36,9 +36,12 @@ startButton.type = 'button';
 startButton.textContent = 'Start camera';
 const calibrateButton = document.createElement('button');
 calibrateButton.type = 'button';
-calibrateButton.textContent = 'Recalibrate';
+calibrateButton.textContent = 'Recalibrate / Restart';
 calibrateButton.disabled = true;
-for (const button of [startButton, calibrateButton]) {
+const restartButton = document.createElement('button');
+restartButton.type = 'button';
+restartButton.textContent = 'Restart run';
+for (const button of [startButton, calibrateButton, restartButton]) {
   button.style.cssText = 'padding:8px 10px;border-radius:4px;cursor:pointer';
   controls.append(button);
 }
@@ -94,6 +97,9 @@ const classifier = new GestureClassifier({
     if (squatDepth) squatDepth.textContent = metrics.valid ? metrics.squatDepth ?? '—' : '—';
     game.registry.set('gestureMetrics', metrics);
     game.registry.set('gestureState', metrics.state);
+    game.scene.getScene('GameScene')?.setControllerStatus?.(
+      metrics.valid, metrics.state === 'NEUTRAL' && metrics.armed, metrics.reason
+    );
     game.events.emit('gesture:metrics', metrics);
   }
 });
@@ -160,16 +166,31 @@ function recalibrate() {
   tracker.recalibrate();
 }
 
+function onRunnerRestart({ recalibrate: needsCalibration }) {
+  // Invalidate gesture history; restarting must never replay a previous action.
+  classifier.reset(needsCalibration ? null : tracker.baseline);
+  if (needsCalibration) recalibrate();
+}
+function restartRun() { game.scene.getScene('GameScene')?.restartGame(); }
+function recalibrateRun() { game.scene.getScene('GameScene')?.restartGame({ recalibrate: true }); }
+game.events.on('runner:restartRequested', onRunnerRestart);
+
 startButton.addEventListener('click', startCamera);
-calibrateButton.addEventListener('click', recalibrate);
-const onPageHide = () => { void tracker.stop(); };
+calibrateButton.addEventListener('click', recalibrateRun);
+restartButton.addEventListener('click', restartRun);
+const onPageHide = () => {
+  game.scene.getScene('GameScene')?.saveHighScore();
+  void tracker.stop();
+};
 window.addEventListener('pagehide', onPageHide);
 
 if (import.meta.hot) {
   import.meta.hot.dispose(() => {
     disposed = true;
     startButton.removeEventListener('click', startCamera);
-    calibrateButton.removeEventListener('click', recalibrate);
+    calibrateButton.removeEventListener('click', recalibrateRun);
+    restartButton.removeEventListener('click', restartRun);
+    game.events.off('runner:restartRequested', onRunnerRestart);
     window.removeEventListener('pagehide', onPageHide);
     void tracker.stop();
     classifier.reset();

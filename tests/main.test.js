@@ -6,7 +6,12 @@ vi.mock('phaser', () => ({ default: {
   Game: class {
     constructor() {
       this.registry = new Map();
-      this.events = { emit: vi.fn() };
+      const listeners = new Map();
+      this.events = {
+        on: vi.fn((name, callback) => listeners.set(name, callback)),
+        off: vi.fn((name) => listeners.delete(name)),
+        emit: vi.fn((name, payload) => listeners.get(name)?.(payload))
+      };
       this.scene = { getScene: vi.fn(() => app.scene) };
       this.destroy = vi.fn();
       app.game = this;
@@ -14,10 +19,10 @@ vi.mock('phaser', () => ({ default: {
   }
 } }));
 vi.mock('../src/vision/PoseTracker.js', () => ({ PoseTracker: class {
-  constructor(video, canvas, callbacks) { this.callbacks = callbacks; app.tracker = this; }
+  constructor(video, canvas, callbacks) { this.callbacks = callbacks; this.baseline = null; app.tracker = this; }
   init() {}
   stop() {}
-  recalibrate() {}
+  recalibrate = vi.fn();
 } }));
 
 let elements;
@@ -59,9 +64,10 @@ beforeEach(async () => {
     getElementById: (id) => elements.find((node) => node.id === id)
   });
   vi.stubGlobal('window', { addEventListener: vi.fn(), removeEventListener: vi.fn() });
-  app.scene = { player: { body: {} }, jump: vi.fn(), duck: vi.fn() };
+  app.scene = { player: { body: {} }, jump: vi.fn(), duck: vi.fn(), setControllerStatus: vi.fn(), restartGame: vi.fn() };
   await import('../src/main.js');
   app.tracker.callbacks.onCalibrationComplete(baseline);
+  app.tracker.baseline = baseline;
   app.tracker.callbacks.onStatusChange('Tracking — calibrated');
 });
 afterEach(() => { vi.unstubAllGlobals(); });
@@ -103,4 +109,16 @@ it('does not queue actions if the game scene is not ready', () => {
   for (let t = 0; t <= 200; t += 20) feed(t);
   for (let t = 220; t <= 720; t += 20) feed(t, points(0.14 * Math.sin(Math.PI * (t - 220) / 500)));
   expect(app.game.events.emit.mock.calls.filter(([name]) => name === 'gesture:action')).toHaveLength(0);
+});
+
+it('disarms the controller on restart, and requests recalibration only when selected', () => {
+  for (let t = 0; t <= 200; t += 20) feed(t);
+  expect(window.gestureClassifier.metrics.armed).toBe(true);
+  app.game.events.emit('runner:restartRequested', { recalibrate: false });
+  expect(window.gestureClassifier.metrics.armed).toBe(false);
+  expect(app.tracker.recalibrate).not.toHaveBeenCalled();
+  expect(app.scene.setControllerStatus).toHaveBeenLastCalledWith(false, false, 'Awaiting stable neutral pose');
+  app.game.events.emit('runner:restartRequested', { recalibrate: true });
+  expect(app.tracker.recalibrate).toHaveBeenCalledOnce();
+  expect(app.game.registry.get('poseTrackingValid')).toBe(false);
 });
