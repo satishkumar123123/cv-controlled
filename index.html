@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CV Endless Runner</title>
+  <link rel="stylesheet" href="./src/style.css" />
+</head>
+<body>
+  <div id="app">
+    <div id="game-container"></div>
+    <div id="dashboard">
+      <div class="camera-wrapper">
+        <video id="webcam" playsinline></video>
+        <canvas id="pose-canvas"></canvas>
+      </div>
+      <div id="analytics-panel">
+        <h3>Movement Analytics</h3>
+        <p>State: <span id="state-val" class="highlight">INITIALIZING</span></p>
+        <p>Flight Time: <span id="flight-time">-</span> s</p>
+        <p>Est. Height: <span id="jump-height">-</span> m</p>
+        <p>Squat Depth: <span id="squat-depth">-</span></p>
+        <p>Knee Flexion: <span id="knee-angle">-</span>°</p>
+      </div>
+    </div>
+  </div>
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>
