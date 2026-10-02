@@ -25,7 +25,7 @@ const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 export class PoseTracker {
   constructor(videoElement, canvasElement, {
     onPoseUpdate = () => {}, onStatusChange = () => {},
-    onCalibrationComplete = () => {}, visibilityThreshold = 0.65,
+    onCalibrationComplete = () => {}, onFrameMetrics = () => {}, onStreamStateChange = () => {}, visibilityThreshold = 0.65,
     emaAlpha = 0.4, assetBaseUrl = ASSETS
   } = {}) {
     if (!videoElement || !canvasElement) throw new Error('Video and canvas elements are required.');
@@ -36,7 +36,7 @@ export class PoseTracker {
     this.canvas = canvasElement;
     this.ctx = canvasElement.getContext('2d');
     if (!this.ctx) throw new Error('A 2D canvas context is unavailable.');
-    Object.assign(this, { onPoseUpdate, onStatusChange, onCalibrationComplete, visibilityThreshold, emaAlpha });
+    Object.assign(this, { onPoseUpdate, onStatusChange, onCalibrationComplete, onFrameMetrics, onStreamStateChange, visibilityThreshold, emaAlpha });
     this.assetBaseUrl = assetBaseUrl.replace(/\/$/, '');
     this.baseline = null;
     this.isRunning = false;
@@ -47,6 +47,7 @@ export class PoseTracker {
     this._lastResultAt = null;
     this._status = '';
     this._trackListeners = [];
+    this._frameSequence = 0;
     this.video.muted = true;
     this.video.autoplay = true;
     this.video.playsInline = true;
@@ -81,8 +82,18 @@ export class PoseTracker {
       // Use one explicit EMA below rather than stacking two smoothing filters.
       pose.onResults((results) => {
         if (!this._isActive(generation)) return;
+        // Stop inference timing BEFORE any drawing, filtering or game callbacks.
+        const inferenceEndedAt = performance.now();
+        if (this._currentFrame && !this._currentFrame.completed) {
+          this._currentFrame.completed = true;
+          this._currentFrame.inferenceEndedAt = inferenceEndedAt;
+          this.onFrameMetrics({
+            ...this._currentFrame,
+            stale: inferenceEndedAt - this._currentFrame.capturedAt > 500
+          });
+        }
         // A very slow inference can finish after tracking was invalidated.
-        if (performance.now() - (this._frameStartedAt ?? performance.now()) > 500) {
+        if (inferenceEndedAt - (this._currentFrame?.capturedAt ?? this._frameStartedAt ?? inferenceEndedAt) > 500) {
           this._invalidate('Pose frame delayed — waiting for fresh input.');
           this._draw(results.image, null);
           return;
@@ -92,16 +103,28 @@ export class PoseTracker {
       await pose.initialize();
       if (!this._isActive(generation)) return;
       this._setStatus('Allow camera access; keep your whole body in view.');
-      const onFrame = async () => {
-        if (!this._isActive(generation) || document.hidden || this.video.readyState < 2) return;
+      const onFrame = async (_now, metadata = {}) => {
+        if (!this._isActive(generation) || this._sendPromise || document.hidden || this.video.readyState < 2) return;
         try {
           this._frameStartedAt = performance.now();
+          // Metadata uses the same monotonic origin as performance.now(). Most
+          // browsers omit captureTime; never present a fallback as sensor time.
+          const available = (value) => Number.isFinite(value) && value >= 0 && value <= this._frameStartedAt;
+          const captureSource = available(metadata.captureTime) ? 'camera-capture'
+            : available(metadata.presentationTime) ? 'video-presentation' : 'frame-acquisition';
+          const capturedAt = captureSource === 'camera-capture' ? metadata.captureTime
+            : captureSource === 'video-presentation' ? metadata.presentationTime : this._frameStartedAt;
+          this._currentFrame = {
+            frameId: ++this._frameSequence, capturedAt, captureSource,
+            inferenceStartedAt: performance.now()
+          };
           this._sendPromise = pose.send({ image: this.video });
           await this._sendPromise;
         } catch (error) {
           if (this._isActive(generation)) this._fail(error);
         } finally {
           this._sendPromise = null;
+          this._currentFrame = null;
         }
       };
       this.camera = new Camera(this.video, { width: 640, height: 480, facingMode: 'user', onFrame });
@@ -122,18 +145,24 @@ export class PoseTracker {
       }
       await this.video.play();
       if (!this._isActive(generation)) return;
+      this.onStreamStateChange({ active: true, settings: tracks[0].getSettings?.() ?? {} });
       this._lastResultAt = performance.now();
       this.recalibrate();
       let lastVideoTime = -1;
-      const tick = async () => {
-        if (!this._isActive(generation)) return;
-        if (this.video.currentTime !== lastVideoTime) {
-          lastVideoTime = this.video.currentTime;
-          await onFrame(); // One in-flight inference; never queue stale frames.
-        }
-        if (this._isActive(generation)) this._frameId = requestAnimationFrame(tick);
+      const useVideoCallback = typeof this.video.requestVideoFrameCallback === 'function';
+      const schedule = () => {
+        if (useVideoCallback) this._videoFrameId = this.video.requestVideoFrameCallback(tick);
+        else this._frameId = requestAnimationFrame(tick);
       };
-      this._frameId = requestAnimationFrame(tick);
+      const tick = async (now, metadata) => {
+        if (!this._isActive(generation)) return;
+        if (useVideoCallback || this.video.currentTime !== lastVideoTime) {
+          lastVideoTime = this.video.currentTime;
+          await onFrame(now, metadata); // One in-flight inference; never queue stale frames.
+        }
+        if (this._isActive(generation)) schedule();
+      };
+      schedule();
       this._watchdog = setInterval(() => {
         if (!this._isActive(generation)) return;
         if (document.hidden || performance.now() - this._lastResultAt > 500) {
@@ -144,6 +173,7 @@ export class PoseTracker {
     } catch (error) {
       if (this._isActive(generation)) {
         this.isRunning = false;
+        this.onStreamStateChange({ active: false });
         this._invalidate();
         this._setStatus(`Camera error: ${this._errorMessage(error)}`);
       }
@@ -236,7 +266,8 @@ export class PoseTracker {
     this._inputValid = true;
     // Consumers cannot mutate the filter's history.
     this.onPoseUpdate(landmarks.map((point) => point && { ...point }), this.baseline, {
-      timestamp: this._frameStartedAt ?? now,
+      ...this._currentFrame,
+      timestamp: this._currentFrame?.capturedAt ?? this._frameStartedAt ?? now,
       aspectRatio: (this.video.videoWidth || 640) / (this.video.videoHeight || 480),
       worldLandmarks: worldLandmarks?.map((point) => point && { ...point }) ?? null
     });
@@ -360,8 +391,10 @@ export class PoseTracker {
   async stop(status = 'Camera stopped — click Start camera.') {
     if (this._stopPromise) return this._stopPromise;
     this.isRunning = false;
+    this.onStreamStateChange({ active: false });
     this._generation += 1;
     cancelAnimationFrame(this._frameId);
+    if (this._videoFrameId != null) this.video.cancelVideoFrameCallback?.(this._videoFrameId);
     clearInterval(this._watchdog);
     this.baseline = null;
     this._invalidate(undefined, true);
@@ -375,6 +408,8 @@ export class PoseTracker {
 
   async _release() {
     cancelAnimationFrame(this._frameId);
+    if (this._videoFrameId != null) this.video.cancelVideoFrameCallback?.(this._videoFrameId);
+    this._videoFrameId = null;
     clearInterval(this._watchdog);
     this.video.onloadedmetadata = null;
     for (const [track, listener] of this._trackListeners) track.removeEventListener('ended', listener);

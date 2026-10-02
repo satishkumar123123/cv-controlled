@@ -71,3 +71,24 @@ body {
   color: #38bdf8;
   font-weight: bold;
 }
+
+#performance-hud {
+  border-top: 1px solid #64748b;
+  margin-top: 6px;
+  padding-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-variant-numeric: tabular-nums;
+}
+
+#performance-hud small {
+  color: #cbd5e1;
+  line-height: 1.4;
+}
+
+#performance-hud button {
+  padding: 6px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+}

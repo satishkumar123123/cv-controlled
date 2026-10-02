@@ -62,9 +62,12 @@ describe('kinematics with confidence and degeneracy checks', () => {
     expect(classifySquatDepth(null, 90, 0.5, 0.7)).toBeNull();
     expect(classifySquatDepth(190, 90, 0.5, 0.7)).toBeNull();
   });
-  it('estimates ballistic jump height in meters from flight time in seconds', () => {
-    expect(estimateJumpHeight(0.5)).toBeCloseTo(0.3065625);
-    expect(estimateJumpHeight(0)).toBe(0);
+  it.each([[0, 0], [0.25, 0.076640625], [0.5, 0.3065625], [0.8, 0.7848], [1, 1.22625]])(
+    'estimates ballistic height for %ss flight as %sm', (time, expected) => {
+      expect(estimateJumpHeight(time)).toBeCloseTo(expected, 7);
+    }
+  );
+  it('rejects invalid flight times', () => {
     for (const value of [-1, NaN, Infinity, null, '0.5']) expect(estimateJumpHeight(value)).toBeNull();
   });
 });

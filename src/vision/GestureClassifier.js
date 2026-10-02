@@ -73,7 +73,7 @@ export class GestureClassifier {
     this._lastTimestamp = null;
     this._clearMotion();
     this._metrics = emptyMetrics();
-    if (wasDucking) this.onActionTrigger('DUCK_END');
+    if (wasDucking) this.onActionTrigger('DUCK_END', { source: 'safety' });
     return this._publish(false, 'Awaiting stable neutral pose');
   }
 
@@ -85,7 +85,7 @@ export class GestureClassifier {
     this.state = wasActive ? GestureState.LANDING_COOLDOWN : GestureState.NEUTRAL;
     this._cooldownUntil = (this._lastTimestamp ?? 0) + this.config.cooldownMs;
     this._metrics = emptyMetrics();
-    if (wasDucking) this.onActionTrigger('DUCK_END');
+    if (wasDucking) this.onActionTrigger('DUCK_END', { source: 'safety' });
     return this._publish(false, reason);
   }
 
@@ -192,7 +192,7 @@ export class GestureClassifier {
           this._metrics.pauseDuration = 0;
         }
         this._candidate = null;
-        this.onActionTrigger(kind);
+        this.onActionTrigger(kind, { source: 'pose', timestamp });
         break;
       }
       case GestureState.JUMPING: {
@@ -225,7 +225,7 @@ export class GestureClassifier {
             this._duck = null;
             this._exitSince = null;
             this._neutralSince = null;
-            this.onActionTrigger('DUCK_END');
+            this.onActionTrigger('DUCK_END', { source: 'pose', timestamp });
           }
         } else this._exitSince = null;
         break;

@@ -34,6 +34,37 @@ beforeEach(() => {
 });
 
 describe('gesture sequences', () => {
+  it('follows the full jump state path and timestamps the frame that completes debounce', () => {
+    const transitions = [classifier.state];
+    updates.mockImplementation(({ state }) => {
+      if (transitions.at(-1) !== state) transitions.push(state);
+    });
+    arm();
+    jump();
+    sequence(740, 1400, () => standing());
+    expect(transitions).toEqual(['NEUTRAL', 'JUMPING', 'LANDING_COOLDOWN', 'NEUTRAL']);
+    expect(actions.mock.calls.map(([action]) => action)).toEqual(['JUMP']);
+    const [action, event] = actions.mock.calls[0];
+    expect(action).toBe('JUMP');
+    expect(event).toMatchObject({ source: 'pose' });
+    expect(event.timestamp).toBeGreaterThan(classifier.t_takeoff); // End of debounce, the action's source frame.
+  });
+
+  it('allows at most one event per frame throughout jumping with bent knees and landing', () => {
+    arm();
+    for (let t = 220; t <= 720; t += 20) {
+      const lift = 0.14 * Math.sin(Math.PI * (t - 220) / 500);
+      const p = standing(lift);
+      p[25].z = p[26].z = -0.13;
+      const before = actions.mock.calls.length;
+      feed(t, p);
+      expect(actions.mock.calls.length - before).toBeLessThanOrEqual(1);
+    }
+    sequence(740, 1400, () => ducked());
+    expect(actions.mock.calls.map(([action]) => action)).toEqual(['JUMP']);
+    expect(classifier.state).toBe('LANDING_COOLDOWN');
+  });
+
   it('arms only after stable neutral and ignores standing, sway and head movement', () => {
     feed(0);
     expect(classifier.metrics.armed).toBe(false);
@@ -51,7 +82,7 @@ describe('gesture sequences', () => {
     arm();
     jump();
     sequence(740, 800, () => standing());
-    expect(actions.mock.calls.flat()).toEqual(['JUMP']);
+    expect(actions.mock.calls.map(([action]) => action)).toEqual(['JUMP']);
     expect(classifier.state).toBe('LANDING_COOLDOWN');
     expect(classifier.metrics.flightTime).toBeGreaterThan(0.4);
     expect(classifier.metrics.flightTime).toBeLessThan(0.52);
@@ -68,7 +99,7 @@ describe('gesture sequences', () => {
       p[31].y = baseline.baselineFootY; // One toe contacts; all other foot markers remain raised.
       return p;
     });
-    expect(actions.mock.calls.flat()).toEqual(['JUMP']);
+    expect(actions.mock.calls.map(([action]) => action)).toEqual(['JUMP']);
     expect(classifier.state).toBe('LANDING_COOLDOWN');
     expect(classifier.metrics.flightTime).toBeGreaterThan(0);
   });
@@ -77,12 +108,12 @@ describe('gesture sequences', () => {
     arm();
     jump();
     sequence(740, 1600, () => ducked());
-    expect(actions.mock.calls.flat()).toEqual(['JUMP']);
+    expect(actions.mock.calls.map(([action]) => action)).toEqual(['JUMP']);
     expect(classifier.state).toBe('LANDING_COOLDOWN');
     sequence(1620, 2100, () => standing());
     expect(classifier.state).toBe('NEUTRAL');
     sequence(2120, 2600, () => ducked());
-    expect(actions.mock.calls.flat()).toEqual(['JUMP', 'DUCK_START']);
+    expect(actions.mock.calls.map(([action]) => action)).toEqual(['JUMP', 'DUCK_START']);
   });
 
   it('enforces the 250ms refractory period even if posture is already neutral', () => {
@@ -102,7 +133,7 @@ describe('gesture sequences', () => {
     expect(classifier.metrics.pauseDuration).toBeGreaterThan(0.25);
     expect(classifier.metrics.pauseDuration).toBeLessThan(0.8);
     sequence(1020, 1800, () => standing());
-    expect(actions.mock.calls.flat()).toEqual(['DUCK_START', 'DUCK_END']);
+    expect(actions.mock.calls.map(([action]) => action)).toEqual(['DUCK_START', 'DUCK_END']);
     expect(classifier.state).toBe('NEUTRAL');
     expect(classifier.metrics.pauseDuration).toBeGreaterThan(0);
   });
@@ -155,7 +186,7 @@ describe('gesture sequences', () => {
       feed(t, standing(0.1));
       expect(actions.mock.calls.length - before).toBeLessThanOrEqual(1);
     }
-    expect(actions.mock.calls.flat()).toEqual(['DUCK_START', 'DUCK_END']);
+    expect(actions.mock.calls.map(([action]) => action)).toEqual(['DUCK_START', 'DUCK_END']);
     expect(classifier.state).toBe('LANDING_COOLDOWN');
   });
 
@@ -170,7 +201,7 @@ describe('gesture sequences', () => {
     expect(classifier.metrics.flightTime).toBeNull();
     expect(classifier.metrics.jumpHeight).toBeNull();
     sequence(440, 700, () => standing(0.1));
-    expect(actions.mock.calls.flat()).toEqual(['JUMP']);
+    expect(actions.mock.calls.map(([action]) => action)).toEqual(['JUMP']);
     sequence(720, 1300, () => standing());
     expect(classifier.metrics.flightTime).toBeNull();
   });
@@ -181,7 +212,7 @@ describe('gesture sequences', () => {
     feed(520, null);
     feed(540, null);
     sequence(560, 1000, () => ducked());
-    expect(actions.mock.calls.flat()).toEqual(['DUCK_START', 'DUCK_END']);
+    expect(actions.mock.calls.map(([action]) => action)).toEqual(['DUCK_START', 'DUCK_END']);
     expect(classifier.state).toBe('LANDING_COOLDOWN');
   });
 
@@ -237,7 +268,7 @@ describe('gesture sequences', () => {
       const lift = t <= 720 ? 0.14 * Math.sin(Math.PI * (t - 220) / 500) : 0;
       feed(t, standing(Math.max(0, lift)));
     }
-    expect(actions.mock.calls.flat()).toEqual(['JUMP']);
+    expect(actions.mock.calls.map(([action]) => action)).toEqual(['JUMP']);
     expect(classifier.metrics.flightTime).toBeGreaterThan(0.4);
     expect(classifier.metrics.flightTime).toBeLessThan(0.55);
     expect(classifier.state).toBe(GestureState.NEUTRAL);

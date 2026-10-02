@@ -25,7 +25,7 @@ vi.mock('../src/vision/PoseTracker.js', () => ({ PoseTracker: class {
   recalibrate = vi.fn();
 } }));
 
-let elements;
+let elements, now;
 function element(id = '') {
   const node = {
     id, textContent: '', style: {}, children: [],
@@ -50,27 +50,37 @@ function points(lift = 0, duck = false) {
   return p;
 }
 function feed(time, p = points()) {
-  app.tracker.callbacks.onPoseUpdate(p, baseline, { timestamp: time, aspectRatio: 1 });
+  const frame = { frameId: time + 1, capturedAt: time, timestamp: time, inferenceStartedAt: time + 2,
+    inferenceEndedAt: time + 12, captureSource: 'frame-acquisition', aspectRatio: 1 };
+  now = time + 12;
+  app.tracker.callbacks.onFrameMetrics(frame);
+  now = time + 16;
+  app.tracker.callbacks.onPoseUpdate(p, baseline, frame);
 }
 const text = (id) => document.getElementById(id).textContent;
 
 beforeEach(async () => {
+  vi.useFakeTimers();
+  now = 0;
+  vi.spyOn(performance, 'now').mockImplementation(() => now);
   vi.resetModules();
   elements = [];
   for (const id of ['webcam', 'pose-canvas', 'state-val', 'analytics-panel', 'flight-time', 'jump-height', 'squat-depth', 'knee-angle']) element(id);
   vi.stubGlobal('document', {
-    createElement: () => element(),
+    createElement: () => element(), hidden: false,
+    addEventListener: vi.fn(), removeEventListener: vi.fn(),
     querySelector: (selector) => elements.find((node) => node.id === selector.slice(1)),
     getElementById: (id) => elements.find((node) => node.id === id)
   });
   vi.stubGlobal('window', { addEventListener: vi.fn(), removeEventListener: vi.fn() });
-  app.scene = { player: { body: {} }, jump: vi.fn(), duck: vi.fn(), setControllerStatus: vi.fn(), restartGame: vi.fn() };
+  app.scene = { player: { body: {} }, jump: vi.fn(() => true), duck: vi.fn(() => true), setControllerStatus: vi.fn(), restartGame: vi.fn() };
   await import('../src/main.js');
   app.tracker.callbacks.onCalibrationComplete(baseline);
   app.tracker.baseline = baseline;
   app.tracker.callbacks.onStatusChange('Tracking — calibrated');
+  app.tracker.callbacks.onStreamStateChange({ active: true, settings: { width: 640, height: 480, frameRate: 30 } });
 });
-afterEach(() => { vi.unstubAllGlobals(); });
+afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 it('connects real classification to Phaser jump and all dashboard measurements', () => {
   for (let t = 0; t <= 200; t += 20) feed(t);
@@ -121,4 +131,58 @@ it('disarms the controller on restart, and requests recalibration only when sele
   app.game.events.emit('runner:restartRequested', { recalibrate: true });
   expect(app.tracker.recalibrate).toHaveBeenCalledOnce();
   expect(app.game.registry.get('poseTrackingValid')).toBe(false);
+});
+
+it('updates the performance HUD and measures accepted actions using their triggering frame', () => {
+  for (let t = 0; t <= 200; t += 20) feed(t);
+  for (let t = 220; t <= 720; t += 20) feed(t, points(0.14 * Math.sin(Math.PI * (t - 220) / 500)));
+  vi.advanceTimersByTime(250);
+  expect(text('inference-latency')).toBe('10.0 ms');
+  expect(text('action-latency')).toBe('16.0 ms (JUMP)');
+  expect(Number(text('camera-fps'))).toBeGreaterThan(0);
+  expect(text('timing-source')).toContain('estimate');
+  expect(window.performanceMonitor.getSummary()).toMatchObject({ acceptedActions: 1, averageActionLatencyMs: 16 });
+});
+
+it('excludes rejected game commands, safety duck releases and out-of-frame calls from action latency', () => {
+  app.scene.duck.mockReturnValue(false);
+  for (let t = 0; t <= 200; t += 20) feed(t);
+  for (let t = 220; t <= 500; t += 20) feed(t, points(0, true));
+  expect(window.performanceMonitor.getSummary().acceptedActions).toBe(0);
+  app.scene.duck.mockReturnValue(true);
+  feed(520, null);
+  expect(app.scene.duck).toHaveBeenLastCalledWith(false);
+  expect(window.performanceMonitor.getSummary().acceptedActions).toBe(0);
+});
+
+it('counts duck start/end from real pose transitions, but not a reset release', () => {
+  for (let t = 0; t <= 200; t += 20) feed(t);
+  for (let t = 220; t <= 500; t += 20) feed(t, points(0, true));
+  for (let t = 520; t <= 1100; t += 20) feed(t);
+  expect(window.performanceMonitor.getSummary().actions).toEqual({ JUMP: 0, DUCK_START: 1, DUCK_END: 1 });
+  for (let t = 1120; t <= 1400; t += 20) feed(t, points(0, true));
+  app.game.events.emit('runner:restartRequested', { recalibrate: false });
+  expect(window.performanceMonitor.getSummary().actions.DUCK_END).toBe(1);
+});
+
+it('pauses the profiler on visibility change/stop and exposes working summary/reset controls', () => {
+  feed(0);
+  const change = document.addEventListener.mock.calls.find(([name]) => name === 'visibilitychange')[1];
+  now = 100;
+  document.hidden = true;
+  change();
+  expect(text('camera-fps')).toBe('0.0');
+  expect(text('inference-latency')).toBe('—');
+  now = 1100;
+  document.hidden = false;
+  change();
+  expect(window.performanceMonitor.getSummary().activeSeconds).toBe(0.1);
+  const log = vi.spyOn(console, 'info').mockImplementation(() => {});
+  const click = (name) => elements.find((node) => node.textContent === name).addEventListener.mock.calls[0][1]();
+  click('Log performance summary');
+  expect(log).toHaveBeenCalledOnce();
+  click('Reset sample');
+  expect(window.performanceMonitor.getSummary().processedFrames).toBe(0);
+  app.tracker.callbacks.onStreamStateChange({ active: false });
+  expect(text('timing-source')).toContain('stopped');
 });
