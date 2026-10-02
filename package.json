@@ -10,8 +10,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@mediapipe/camera_utils": "^0.4.1675466862",
-    "@mediapipe/pose": "^0.5.1675469404",
+    "@mediapipe/camera_utils": "0.3.1675466862",
+    "@mediapipe/pose": "0.5.1675469404",
     "phaser": "^3.80.1"
   },
   "devDependencies": {
