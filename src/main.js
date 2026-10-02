@@ -59,7 +59,7 @@ for (const [id, label, unit] of [
   ['hip-angle', 'Hip Flexion', '°'], ['torso-lean', 'Torso Lean', '°'],
   ['stance-width', 'Stance / Shoulder Width', ''],
   ['vertical-displacement', 'Peak Hip Rise', ' frame height'],
-  ['pause-duration', 'Bottom Pause', ' s']
+  ['pause-duration', 'Bottom Pause', ' s'], ['hips-at-knee-level', 'Hips at Knee Level (image)', '']
 ]) {
   if (document.getElementById(id)) continue;
   const row = document.createElement('p');
@@ -77,6 +77,7 @@ const metricFields = [
   ['stance-width', 'stanceWidthRatio', 2], ['pause-duration', 'pauseDuration', 2]
 ].map(([id, key, digits]) => ({ element: document.getElementById(id), key, digits }));
 const squatDepth = document.querySelector('#squat-depth');
+const hipsAtKneeLevel = document.getElementById('hips-at-knee-level');
 const performanceMonitor = new PerformanceMonitor();
 window.performanceMonitor = performanceMonitor;
 const performanceHUD = document.createElement('section');
@@ -153,10 +154,16 @@ const classifier = new GestureClassifier({
     for (const { element, key, digits } of metricFields) {
       if (element) element.textContent = metrics.valid && Number.isFinite(metrics[key]) ? metrics[key].toFixed(digits) : '—';
     }
-    if (squatDepth) squatDepth.textContent = metrics.valid ? metrics.squatDepth ?? '—' : '—';
+    if (squatDepth) squatDepth.textContent = metrics.valid ? metrics.depthCategory ?? '—' : '—';
+    if (hipsAtKneeLevel) hipsAtKneeLevel.textContent = metrics.valid && typeof metrics.isHipsAtKneeLevel === 'boolean'
+      ? metrics.isHipsAtKneeLevel ? 'Yes' : 'No' : '—';
     game.registry.set('gestureMetrics', metrics);
     game.registry.set('gestureState', metrics.state);
-    game.scene.getScene('GameScene')?.setControllerStatus?.(
+    const scene = game.scene.getScene('GameScene');
+    // Actions are edges; ducking is held state. Keep intent synchronized even if
+    // DUCK_START was rejected while the virtual player was still in the air.
+    if (scene) scene.desiredDuckState = metrics.valid && metrics.state === 'DUCKING';
+    scene?.setControllerStatus?.(
       metrics.valid, metrics.state === 'NEUTRAL' && metrics.armed, metrics.reason
     );
     game.events.emit('gesture:metrics', metrics);
@@ -179,8 +186,8 @@ const tracker = new PoseTracker(video, canvas, {
     if (statusText !== 'Tracking — calibrated' || !classifier.metrics?.valid) state.textContent = statusText;
     updateControls();
   },
-  onCalibrationComplete(baselineData) {
-    classifier.reset(baselineData);
+  onCalibrationComplete(baselineData, neutralSamples = []) {
+    classifier.completeCalibration(baselineData, neutralSamples);
     game.registry.set('poseBaseline', baselineData);
     game.events.emit('pose:calibrated', baselineData);
   },

@@ -42,7 +42,8 @@ Permissions Policy. The first model load needs internet access by default.
 2. Stand upright with straight legs and hold still through the **3-second**
    countdown. Calibration requires at least **30 valid observations** and an
    uninterrupted hold. Movement or missing landmarks restarts the hold.
-3. Hold neutral briefly to arm the controller. The game starts automatically.
+3. The final stable calibration frames must pass the live neutral self-check;
+   the controller then arms and the game starts automatically.
    Jump for red hurdles; duck for purple barriers and stay down until clear.
 4. On collision, click **Restart run**, the canvas **Restart** prompt, or press
    **Space**. Choose **Recalibrate / Restart** after moving the camera, changing
@@ -56,8 +57,11 @@ Calibration averages these filtered **normalized image** quantities over the hol
 | --- | --- |
 | `baselineHipY` | Mean Y of left/right hips (23, 24) |
 | `baselineFootY` | Mean Y of heels and foot indices (29, 30, 31, 32) |
+| `baselineLeftHeelY` / `baselineRightHeelY` | Individual mean Y for heels 29 / 30 |
+| `baselineLeftToeY` / `baselineRightToeY` | Individual mean Y for foot indices 31 / 32 |
 | `torsoHeight` | 2D Euclidean distance between mid-shoulder and mid-hip |
 | `shoulderWidth` | 2D Euclidean distance between shoulders (11, 12) |
+| `footYStdDev` / `footYNoiseEnvelope` | Raw Y sample standard deviation and 3σ envelope, indexed by landmark 29–32 |
 
 Image Y increases downward. These distances use normalized XY, not meters.
 Raw landmarks must stay within **0.10 × initial torso height** of their initial
@@ -67,6 +71,21 @@ torso height ≥ 0.06, shoulder width ≥ 0.04, shoulder-to-hip vertical separat
 ≥ 85% of torso length, shoulder height difference ≤ 40% of shoulder width, and
 hip-to-knee/knee-to-ankle vertical separations ≥ 0.04. These are game heuristics,
 not a clinical posture assessment.
+
+Ground contact uses each marker's own baseline, so a naturally higher heel and
+lower toe cannot permanently disarm the controller. `baselineFootY` remains a
+summary and fallback for legacy callers that supply none of the four individual
+baselines; a partially populated new baseline is rejected. Raw foot noise uses
+online sample variance, independent of EMA smoothing. A 3σ envelope larger than
+`max(0.025, 0.10 × torsoHeight)` restarts calibration rather than widening ground
+contact indefinitely.
+
+The final 300 ms of filtered frames (bounded to 64 observations) are replayed
+through the same classifier with no action callbacks. Their joint geometry,
+visibility, contacts, hip position and velocity must satisfy neutral, including
+the 120 ms hold. Failure restarts calibration with a status message. Successful
+history is handed to the live classifier to arm immediately; normal restarts
+and tracking recovery still require a new neutral hold.
 
 ## System architecture and model selection
 
@@ -130,6 +149,7 @@ All gesture timestamps use the source frame's monotonic clock.
 stateDiagram-v2
     [*] --> NEUTRAL
     NEUTRAL --> JUMPING: Airborne and rising, 35 ms
+    NEUTRAL --> LANDING_COOLDOWN: Provisional airborne then contact
     JUMPING --> LANDING_COOLDOWN: Landing confirmed, 30 ms
     LANDING_COOLDOWN --> NEUTRAL: 250 ms elapsed and neutral held
     NEUTRAL --> DUCKING: Grounded bend held, 120 ms
@@ -138,18 +158,20 @@ stateDiagram-v2
 
 | Rule | Exact default condition |
 | --- | --- |
-| Foot grounded | Either heel or toe of that foot within ±0.06 H of baselineFootY |
-| Both feet airborne | All four heel/toe points more than 0.08 H above baselineFootY |
+| Foot grounded | Either heel or toe within ±T of its own baseline, where T = max(0.025, 0.10 H) |
+| Both feet airborne | All four heel/toe points rise more than max(0.12 H, T + 0.02 H) above their own baselines |
+| Provisional airborne | All four heel/toe points rise beyond T, even without sustained takeoff or sufficient hip speed |
 | Neutral/rearm | Both feet grounded, \|D\| ≤ 0.05, mean knee flexion < 25°, \|U\| ≤ 0.12, held for 120 ms |
 | Jump trigger | Airborne AND U > 0.6, sustained for 35 ms while armed |
 | Landing | Either foot grounded, U ≤ 0.12, ≥100 ms since takeoff, contact sustained for 30 ms |
 | Landing cooldown | At least 250 ms **after confirmed landing**, plus stable neutral; no duck trigger in this state |
+| Provisional landing cooldown | First ground contact after provisional airborne observation starts the same 250 ms suppression and neutral-recovery gate; no jump event or flight metrics are invented |
 | Duck start | Both feet grounded, D > 0.15 AND mean knee flexion > 40°, sustained for 120 ms while armed |
 | Duck end | Both feet grounded and \|D\| ≤ 0.05 for 80 ms; rearm requires stable neutral again |
 | Bottom pause | Hip within 0.03 H of deepest observed duck position and \|U\| ≤ 0.12 for at least 120 ms |
 | Invalid flight | Flight lasting >2000 ms, missing geometry, or a frame gap >200 ms discards incomplete flight metrics |
 
-The 0.08/0.06 foot thresholds and 0.15/0.05 hip thresholds provide hysteresis.
+The gap above adaptive contact tolerance and the 0.15/0.05 hip thresholds provide hysteresis.
 Exactly one state branch is evaluated per frame. `JUMPING` cannot trigger a duck
 or another jump. A landing knee bend remains recovery **even beyond 250 ms**
 until the user stands neutrally. Rising from a duck cannot immediately trigger a
@@ -230,11 +252,15 @@ straight neutral**, not the interior joint angle.
 | Deep/full squat | 110–130° | 120–150° |
 
 Ranges are inclusive. Deep is checked first, then Parallel, Half and Quarter:
-90°/90° therefore returns **Parallel**. Parallel also accepts hips at knee level
-(`abs(hipY − kneeY) ≤ 0.02` normalized Y) **if both flexions are at least 40°**.
+90°/90° therefore returns **Parallel**. The return value is
+`{ depthCategory, isHipsAtKneeLevel }`: only the two flexion angles determine the
+label. The independent knee-level observation is
+`abs(hipY − kneeY) ≤ 0.02` normalized Y and cannot promote Quarter/Half to Parallel.
 Both flexions below 40° return `Standing`; gaps/conflicting bands return
-`Transition`. Non-finite or out-of-range angles return `null`. The knee-level
-shortcut depends on camera perspective. This label alone never triggers ducking:
+`Transition`. Non-finite or out-of-range angles yield `depthCategory: null`;
+missing/non-finite/out-of-frame image Y yields `isHipsAtKneeLevel: null`
+independently. The knee-level observation depends on camera perspective and is
+displayed separately in the HUD. This label alone never triggers ducking:
 the FSM still requires grounded feet, hip drop and debounce.
 
 ## Performance and latency profiling
@@ -275,6 +301,8 @@ in that latency value. It ends at JavaScript game-state mutation, before the
 next render/display scanout; `DUCK_END` starts a 90 ms body restoration whose
 completion is also outside this boundary. Rejected commands, pre-scene actions,
 tracking-loss/reset duck releases and unmatched/duplicate frames are excluded.
+An airborne duck command retained as intent is not an accepted synchronous body
+mutation; its later landing reconciliation is also excluded from this metric.
 No accepted action means a null action average, never a fabricated zero.
 
 ### Reproducible target-machine benchmark
@@ -322,11 +350,18 @@ Arcade Physics pool recycles obstacles offscreen.
 | Duck player | 30 × 28 px, feet anchored; gold; standing restored over 90 ms |
 | Jump velocity / gravity | −600 px/s / 1400 px/s² |
 | Red ground obstacles | 35–45 px high, 34–44 px wide |
-| Purple overhead obstacles | 32 px high, lower edge 36 px above ground |
+| Purple overhead obstacles | 92–108 px wide; extend from canvas top (y = 0) to y = 402, exactly 38 px above ground |
 | Recovery spacing | At least 2.2 s between clearing one obstacle and reaching the next, calculated at maximum speed |
 | Restart / tracking-resume protection | 1.5 s of invulnerability, shown by flashing |
 
 `GameScene.jump()` and `duck(isDucking)` return whether a command was accepted.
+If an active, valid duck command arrives in the air, it returns false for the
+immediate hitbox change but retains `desiredDuckState`. `main.js` continuously
+synchronizes that intent with the classifier's valid `DUCKING` state. Landing
+applies the 28 px body automatically, before obstacle overlaps in the same
+physics step; the scene update also reconciles resting contact. Duck end,
+tracking loss and restart clear pending intent. Ceiling barriers leave 10 px
+of duck clearance and cannot be jumped over, including at maximum speed.
 `restartGame({ recalibrate: false })` reuses the scene/pool, clears the run and
 waits for neutral. `setControllerStatus(valid, neutral, reason)` pauses/resumes
 physics, scrolling and score. A collision calls `gameOver()` and freezes spawning
@@ -338,16 +373,20 @@ and physics until restart.
 - `onPoseUpdate(landmarks, baseline, frame)`; null landmarks invalidate motion.
   Frame metadata includes `timestamp`/`capturedAt`, `frameId`, timing/source fields,
   `aspectRatio` and filtered `worldLandmarks`.
-- `onCalibrationComplete(baselineData)` and `onStatusChange(statusText)`.
+- `onCalibrationComplete(baselineData, neutralSamples)` and `onStatusChange(statusText)`.
+  The second calibration argument is optional for consumers; it contains the
+  verified final `{ landmarks, frame }` samples for immediate neutral arming.
 - `onFrameMetrics(frame)` runs at result entry, including no-pose/calibration
   results; `onStreamStateChange({ active, settings })` reports camera lifecycle.
 
 `GestureClassifier` exposes `update(landmarks, baseline, timestampMs, frame)`,
-`reset(baseline)` and `invalidate(reason)`. `onActionTrigger(action, context)` emits
+`reset(baseline)`, `completeCalibration(baseline, neutralSamples)` and
+`invalidate(reason)`. `onActionTrigger(action, context)` emits
 `JUMP`, `DUCK_START` or `DUCK_END`; context marks `source: 'pose'` with timestamp,
 or `source: 'safety'` for cancellation releases. One-argument consumers remain
 compatible. `onMetricsUpdate(metrics)` includes validity/state plus flightTime
-(s), jumpHeight (m), verticalDisplacement (normalized Y), squatDepth, kneeFlexion,
+(s), jumpHeight (m), verticalDisplacement (normalized Y), depthCategory,
+isHipsAtKneeLevel, squatDepth (a compatibility alias for depthCategory), kneeFlexion,
 hipFlexion, torsoLean (degrees), stanceWidthRatio and pauseDuration (s).
 
 `main.js` relays `pose:update`, `pose:calibrated`, `gesture:action` and
@@ -366,6 +405,7 @@ releases capture; hot-module disposal removes timers and listeners.
 | `tests/PoseTracker.test.js` | Stillness calibration, raw visibility gate, EMA, canvas calls, camera failure/retry/cleanup, sequential scheduling, capture timestamp fallbacks and inference timing before consumers |
 | `tests/PerformanceMonitor.test.js` | Known clock intervals, processing FPS, action/frame pairing, invalid samples, stale results, pauses, resets, bounded storage and hardware summaries |
 | `tests/main.test.js` | Real classifier wired to mocked Phaser/DOM, command acceptance, HUD metrics, summary/reset controls, safety-release exclusion and visibility handling |
+| `tests/RegressionAudit.test.js` | Held airborne duck and cancellation, provisional landing bends/cooldown, divergent heel/toe calibration and immediate arming, raw noise/self-check failure, high-barrier ballistic intersection, independent squat category/knee-level flag |
 
 For actual Phaser/browser integration checks (optional extra tooling):
 
@@ -382,9 +422,12 @@ collision bodies, jump/duck clearance, standing restoration, score persistence,
 restart controls, protection, 40 restarts and five minutes of simulated survival.
 They also test a native video callback with a generated canvas stream and pair
 synthetic pose frames with accepted real Phaser actions and the performance HUD.
+Audit regressions exercise max-speed high-barrier collisions at three jump
+timings, same-step landing/duck/obstacle ordering, and a short physical jump
+followed by a rejected duck edge through the real classifier/main/Phaser stack.
 These are integration checks, **not webcam/model inference benchmarks**.
 
-Verification on 2026-10-02: **115 Vitest tests passed**, production build passed,
+Verification on 2026-10-02: **135 Vitest tests passed**, production build passed,
 and the browser suite passed with no JavaScript errors. Environment: Linux
 6.18.44 x86_64 container, AMD EPYC 9V74 host-reported CPU, 8 available logical
 processors, Node.js 24.19.0, Chromium 153 using software WebGL. No physical
@@ -404,7 +447,7 @@ bundle warning due to the included Phaser/runtime code; the build completes.
 | Camera disconnect / permission denial / WebGL failure | A readable status is shown; camera/model resources are released. Reconnect or fix permission/support, then start again. |
 | Camera movement / distance change | Baseline position and image scales become invalid; recalibrate. There is no automatic camera-motion compensation. |
 | Multiple people / background confusion | The model may select the wrong person. The application supports one subject and does not implement identity tracking. |
-| Unequal heel/toe baseline / asymmetric posture | One averaged foot baseline can misidentify contact. The flight-time result is a threshold-based estimate, not a contact-sensor measurement. |
+| Unequal heel/toe baseline / asymmetric posture | Individual marker baselines and adaptive contact tolerance handle static offsets. Changed footwear, posture or camera position still requires recalibration; inferred flight time is not a contact-sensor measurement. |
 | Monocular depth / perspective | Estimated 3D geometry, unsigned hip proxy and image-plane lean are not validated clinical measurements. A second camera or depth sensor is not used. |
 
 The existing tests establish mathematical and state-machine behavior for known

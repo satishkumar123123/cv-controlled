@@ -54,13 +54,14 @@ describe('kinematics with confidence and degeneracy checks', () => {
     [65, 65, 'Transition'], [105, 115, 'Transition'], [50, 100, 'Transition'],
     [0, 0, 'Standing']
   ])('classifies requested range hip=%s knee=%s as %s', (hip, knee, expected) => {
-    expect(classifySquatDepth(hip, knee, 0.5, 0.7)).toBe(expected);
+    expect(classifySquatDepth(hip, knee, 0.5, 0.7)).toEqual({ depthCategory: expected, isHipsAtKneeLevel: false });
   });
-  it('supports hips at knee level, rejects null angles, and prioritizes deep over parallel', () => {
-    expect(classifySquatDepth(85, 85, 0.69, 0.7)).toBe('Parallel squat');
-    expect(classifySquatDepth(120, 130, 0.7, 0.7)).toBe('Deep/full squat');
-    expect(classifySquatDepth(null, 90, 0.5, 0.7)).toBeNull();
-    expect(classifySquatDepth(190, 90, 0.5, 0.7)).toBeNull();
+  it('keeps the knee-level observation independent of angle category and validity', () => {
+    expect(classifySquatDepth(85, 85, 0.69, 0.7)).toEqual({ depthCategory: 'Half squat', isHipsAtKneeLevel: true });
+    expect(classifySquatDepth(120, 130, 0.7, 0.7)).toEqual({ depthCategory: 'Deep/full squat', isHipsAtKneeLevel: true });
+    expect(classifySquatDepth(null, 90, 0.5, 0.7)).toEqual({ depthCategory: null, isHipsAtKneeLevel: false });
+    expect(classifySquatDepth(190, 90, 0.5, 0.7).depthCategory).toBeNull();
+    expect(classifySquatDepth(50, 50, NaN, null)).toEqual({ depthCategory: 'Quarter squat', isHipsAtKneeLevel: null });
   });
   it.each([[0, 0], [0.25, 0.076640625], [0.5, 0.3065625], [0.8, 0.7848], [1, 1.22625]])(
     'estimates ballistic height for %ss flight as %sm', (time, expected) => {

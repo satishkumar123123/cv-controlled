@@ -69,6 +69,16 @@ mkdirSync(OUTPUT, { recursive: true });
       fresh(); place('HIGH'); step(2);
       check(s.runState === 'GAME_OVER', 'high barrier hits standing player');
 
+      for (const contactTime of [0.2, 0.42, 0.65]) {
+        fresh(); s.score = 1000; s.distance = 10000; s.speed = 360;
+        const ceiling = s.spawnObstacle('HIGH');
+        check(ceiling.body.top === 0 && ceiling.body.bottom === 402, 'high barrier spans ceiling to 38 px clearance');
+        ceiling.body.reset(s.player.body.right + ceiling.width / 2 + 360 * contactTime, ceiling.y);
+        check(s.jump(), 'max-speed jump accepted before high barrier');
+        step(90);
+        check(s.runState === 'GAME_OVER', 'high barrier collides with max-speed jump', { contactTime, width: ceiling.width });
+      }
+
       fresh(); check(s.duck(true), 'duck accepts grounded gesture'); const high = place('HIGH');
       check(s.player.body.height === 28 && s.player.body.top >= high.body.bottom + 7, 'duck has clearance below high barrier');
       let worstFeetError = 0;
@@ -92,6 +102,20 @@ mkdirSync(OUTPUT, { recursive: true });
       step(70, () => { peakFeet = Math.min(peakFeet, s.player.body.bottom); });
       check(s.runState === 'RUNNING' && s._isGrounded(), 'jump clears low hurdle and lands');
       check(440 - peakFeet > 115 && 440 - peakFeet < 135, 'jump trajectory matches -600 / 1400 physics', { peakRise: 440 - peakFeet });
+      check(s.desiredDuckState && s.isDucking && s.player.body.height === 28 && s.player.body.bottom === 440,
+        'held airborne duck is reconciled on landing without another DUCK_START');
+
+      // The ground collider must apply a held duck before a barrier overlap in
+      // the SAME physics step. A scene.update-only fix is one frame too late.
+      fresh();
+      s.player.body.reset(110, 408); // Feet 2 px above ground, descending.
+      s.player.body.setVelocityY(300);
+      s._jumpActive = true;
+      check(!s.duck(true), 'landing-frame duck intent waits for contact');
+      place('HIGH');
+      step();
+      check(s.runState === 'RUNNING' && s.isDucking && s.player.body.height === 28,
+        'landing reconciliation precedes same-step barrier overlap');
 
       fresh(true);
       for (let i = 0; i < 80; i++) {
@@ -148,6 +172,59 @@ mkdirSync(OUTPUT, { recursive: true });
       return { checks, score: s.score, highScore: s.highScore, spawns, pool: s.obstacles.getLength() };
     });
     console.log(JSON.stringify(results, null, 2));
+    // Reproduce the audited short physical jump -> valid held duck sequence
+    // through the real classifier, main callbacks and Arcade physics together.
+    await page.evaluate(() => {
+      const scene = window.game.scene.getScene('GameScene'), tracker = window.poseTracker, classifier = window.gestureClassifier;
+      const baseline = { baselineHipY: 0.45, baselineFootY: 0.87, torsoHeight: 0.25, shoulderWidth: 0.2 };
+      const points = (lift = 0, duck = false) => {
+        const p = Array.from({ length: 33 }, () => ({ x: 0.5, y: 0.1, z: 0, visibility: 1 }));
+        for (const [left, right, y] of [[11, 12, 0.2], [23, 24, 0.45], [25, 26, 0.65], [27, 28, 0.85], [29, 30, 0.87], [31, 32, 0.87]]) {
+          p[left] = { x: 0.4, y: y - lift, z: 0, visibility: 1 };
+          p[right] = { x: 0.6, y: y - lift, z: 0, visibility: 1 };
+        }
+        if (duck) {
+          for (const i of [11, 12, 23, 24]) p[i].y += 0.15;
+          for (const i of [25, 26]) Object.assign(p[i], { y: 0.72, z: -0.13 });
+        }
+        return p;
+      };
+      scene.restartGame();
+      scene._distanceUntilSpawn = Infinity;
+      tracker.onCalibrationComplete(baseline);
+      const originalDuck = scene.duck;
+      let rejected = 0, time = 0;
+      scene.duck = function (held) {
+        const accepted = originalDuck.call(this, held);
+        if (held && !accepted) rejected++;
+        return accepted;
+      };
+      const feed = (p) => {
+        tracker.onPoseUpdate(p, baseline, { timestamp: time, aspectRatio: 1 });
+        scene.physics.world.update(time, 10);
+        scene.update(time, 10);
+        scene.physics.world.postUpdate();
+      };
+      try {
+        for (time = 0; time <= 200; time += 10) feed(points());
+        for (time = 210; time <= 420; time += 10) feed(points(Math.max(0, 0.06 * Math.sin(Math.PI * (time - 220) / 200))));
+        let rearmed = false;
+        for (time = 430; time < 1300; time += 10) {
+          feed(points());
+          if (classifier.metrics.armed) { rearmed = true; break; }
+        }
+        if (!rearmed) throw Error('Short jump did not rearm');
+        for (time += 10; time <= 1800; time += 10) feed(points(0, true));
+        if (rejected !== 1 || classifier.state !== 'DUCKING' || !scene.desiredDuckState ||
+            !scene.isDucking || scene.player.body.height !== 28 || !scene._isGrounded()) {
+          throw Error('Held physical duck was not reconciled after the rejected edge: ' + JSON.stringify({
+            rejected, state: classifier.state, height: scene.player.body.height, desired: scene.desiredDuckState
+          }));
+        }
+        scene.gameOver();
+      } finally { scene.duck = originalDuck; }
+    });
+    console.log('PASS: real classifier/main/Phaser reconcile a rejected held duck after a short physical jump');
     await page.evaluate(() => window.game.loop.wake());
     await page.screenshot({ path: OUTPUT + '/runner-gameover.png' });
     await page.keyboard.press('Space');

@@ -1,5 +1,6 @@
 import { Pose } from '@mediapipe/pose';
 import { Camera } from '@mediapipe/camera_utils';
+import { GestureClassifier, FOOT_BASELINES, groundContactTolerance } from './GestureClassifier.js';
 
 // Match the pinned package version. Override assetBaseUrl to self-host assets.
 const ASSETS = 'https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5.1675469404';
@@ -260,17 +261,18 @@ export class PoseTracker {
     const worldLandmarks = world ? this._filter(world, dt, true) : null;
     if (!world) this._smoothedWorld = null;
     this._draw(results.image, landmarks);
-    if (!this.baseline) this._calibrate(raw, landmarks, now);
-    if (!this.baseline) return;
-    this._setStatus('Tracking — calibrated');
-    this._inputValid = true;
-    // Consumers cannot mutate the filter's history.
-    this.onPoseUpdate(landmarks.map((point) => point && { ...point }), this.baseline, {
+    const frame = {
       ...this._currentFrame,
       timestamp: this._currentFrame?.capturedAt ?? this._frameStartedAt ?? now,
       aspectRatio: (this.video.videoWidth || 640) / (this.video.videoHeight || 480),
       worldLandmarks: worldLandmarks?.map((point) => point && { ...point }) ?? null
-    });
+    };
+    if (!this.baseline) this._calibrate(raw, landmarks, now, frame);
+    if (!this.baseline) return;
+    this._setStatus('Tracking — calibrated');
+    this._inputValid = true;
+    // Consumers cannot mutate the filter's history.
+    this.onPoseUpdate(landmarks.map((point) => point && { ...point }), this.baseline, frame);
   }
 
   _measure(landmarks) {
@@ -279,6 +281,7 @@ export class PoseTracker {
     return {
       baselineHipY: hip.y,
       baselineFootY: [29, 30, 31, 32].reduce((sum, index) => sum + landmarks[index].y, 0) / 4,
+      ...Object.fromEntries(Object.entries(FOOT_BASELINES).map(([index, key]) => [key, landmarks[index].y])),
       torsoHeight: distance(shoulder, hip),
       shoulderWidth: distance(landmarks[11], landmarks[12])
     };
@@ -302,7 +305,7 @@ export class PoseTracker {
     });
   }
 
-  _calibrate(raw, filtered, now) {
+  _calibrate(raw, filtered, now, frame) {
     const rawMetrics = this._measure(raw);
     if (!this._standing(raw, rawMetrics)) {
       this._calibration = null;
@@ -322,7 +325,9 @@ export class PoseTracker {
       sample = this._calibration = {
         startedAt: now, lastAt: -Infinity, count: 0,
         anchor: raw.map((point) => point && { ...point }), torsoHeight: rawMetrics.torsoHeight,
-        totals: { baselineHipY: 0, baselineFootY: 0, torsoHeight: 0, shoulderWidth: 0 }
+        totals: Object.fromEntries(Object.keys(rawMetrics).map((key) => [key, 0])),
+        footNoise: Object.fromEntries(Object.keys(FOOT_BASELINES).map((index) => [index, { mean: 0, m2: 0 }])),
+        recent: []
       };
     }
     if (now <= sample.lastAt) return;
@@ -330,15 +335,39 @@ export class PoseTracker {
     for (const key of Object.keys(sample.totals)) sample.totals[key] += metrics[key];
     sample.count += 1;
     sample.lastAt = now;
+    // Welford's online variance measures raw jitter, not EMA-reduced noise.
+    for (const [index, noise] of Object.entries(sample.footNoise)) {
+      const delta = raw[index].y - noise.mean;
+      noise.mean += delta / sample.count;
+      noise.m2 += delta * (raw[index].y - noise.mean);
+    }
+    sample.recent.push({ landmarks: filtered.map((point) => point && { ...point }), frame });
+    sample.recent = sample.recent.filter((item) => item.frame.timestamp >= frame.timestamp - 300).slice(-64);
     const remaining = Math.max(0, 3000 - (now - sample.startedAt));
     this._setStatus(`Calibrating — hold still: ${Math.max(1, Math.ceil(remaining / 1000))}s`);
     // Require fresh frames, 3 continuous seconds and at least 30 observations.
     if (remaining > 0 || sample.count < 30) return;
-    this.baseline = Object.freeze(Object.fromEntries(
+    const baseline = Object.fromEntries(
       Object.entries(sample.totals).map(([key, total]) => [key, total / sample.count])
-    ));
+    );
+    baseline.footYStdDev = Object.freeze(Object.fromEntries(Object.entries(sample.footNoise)
+      .map(([index, noise]) => [index, Math.sqrt(Math.max(0, noise.m2 / (sample.count - 1)))])));
+    baseline.footYNoiseEnvelope = Object.freeze(Object.fromEntries(Object.entries(baseline.footYStdDev)
+      .map(([index, deviation]) => [index, 3 * deviation])));
+    // Verify the SAME neutral/contact/visibility criteria as live control. A
+    // calibration that cannot arm must not report success and freeze the game.
+    const check = new GestureClassifier();
+    const neutral = check.completeCalibration(baseline, sample.recent);
+    if (!neutral.armed || Object.values(baseline.footYNoiseEnvelope).some((noise) => noise > groundContactTolerance(baseline))) {
+      this._calibration = null;
+      this._smoothed = this._smoothedWorld = null;
+      this._setStatus('Calibration reset — neutral self-check failed. Stand still with both feet flat.');
+      return;
+    }
+    this.baseline = Object.freeze(baseline);
     this._calibration = null;
-    this.onCalibrationComplete(this.baseline);
+    // Optional second argument lets the controller reuse this already-held pose.
+    this.onCalibrationComplete(this.baseline, sample.recent);
   }
 
   _draw(image, landmarks) {

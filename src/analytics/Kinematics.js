@@ -67,19 +67,24 @@ export function calculateStanceWidthRatio(leftAnkle, rightAnkle, shoulderWidth) 
 /**
  * Task-specified bands; squat-depth terminology varies between protocols.
  * Gaps or conflicting angles stay Transition rather than inventing a category.
+ * The angle category and image-plane knee-level observation are independent.
  * hipY/kneeY are normalized image Y; 0.02 is the knee-level tolerance.
  */
 export function classifySquatDepth(hipFlexion, kneeFlexion, hipY, kneeY) {
-  if (![hipFlexion, kneeFlexion, hipY, kneeY].every(Number.isFinite) ||
-      hipFlexion < 0 || hipFlexion > 180 || kneeFlexion < 0 || kneeFlexion > 180) return null;
+  const result = {
+    depthCategory: null,
+    isHipsAtKneeLevel: [hipY, kneeY].every((y) => Number.isFinite(y) && y >= 0 && y <= 1)
+      ? Math.abs(hipY - kneeY) <= 0.02 : null
+  };
+  if (![hipFlexion, kneeFlexion].every(Number.isFinite) ||
+      hipFlexion < 0 || hipFlexion > 180 || kneeFlexion < 0 || kneeFlexion > 180) return result;
   const between = (value, low, high) => value >= low && value <= high;
-  if (between(hipFlexion, 110, 130) && between(kneeFlexion, 120, 150)) return 'Deep/full squat';
-  if ((between(hipFlexion, 90, 100) && between(kneeFlexion, 90, 110)) ||
-      (Math.abs(hipY - kneeY) <= 0.02 && hipFlexion >= 40 && kneeFlexion >= 40)) return 'Parallel squat';
-  if (between(hipFlexion, 70, 90) && between(kneeFlexion, 70, 90)) return 'Half squat';
-  if (between(hipFlexion, 40, 60) && between(kneeFlexion, 40, 60)) return 'Quarter squat';
-  if (hipFlexion < 40 && kneeFlexion < 40) return 'Standing';
-  return 'Transition';
+  if (between(hipFlexion, 110, 130) && between(kneeFlexion, 120, 150)) result.depthCategory = 'Deep/full squat';
+  else if (between(hipFlexion, 90, 100) && between(kneeFlexion, 90, 110)) result.depthCategory = 'Parallel squat';
+  else if (between(hipFlexion, 70, 90) && between(kneeFlexion, 70, 90)) result.depthCategory = 'Half squat';
+  else if (between(hipFlexion, 40, 60) && between(kneeFlexion, 40, 60)) result.depthCategory = 'Quarter squat';
+  else result.depthCategory = hipFlexion < 40 && kneeFlexion < 40 ? 'Standing' : 'Transition';
+  return result;
 }
 
 /** Ballistic estimate in meters. Assumes equal COM height at takeoff/landing. */

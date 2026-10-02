@@ -8,8 +8,15 @@ export const GestureState = Object.freeze({
 });
 const REQUIRED = [11, 12, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32];
 const JOINTS = [11, 12, 23, 24, 25, 26, 27, 28];
+export const FOOT_BASELINES = Object.freeze({
+  29: 'baselineLeftHeelY', 30: 'baselineRightHeelY',
+  31: 'baselineLeftToeY', 32: 'baselineRightToeY'
+});
+// A normalized-image floor also protects subjects who stand farther away.
+export const groundContactTolerance = (baseline, scale = 0.10) =>
+  Math.max(0.025, 0.10 * baseline.torsoHeight, scale * baseline.torsoHeight);
 const DEFAULTS = Object.freeze({
-  footLift: 0.08, groundTolerance: 0.06, jumpVelocity: 0.6,
+  footLift: 0.12, groundTolerance: 0.10, jumpVelocity: 0.6,
   duckDrop: 0.15, duckKneeFlexion: 40, neutralHipTolerance: 0.05,
   neutralKneeFlexion: 25, stillVelocity: 0.12,
   jumpDebounceMs: 35, duckDebounceMs: 120, exitDebounceMs: 80,
@@ -19,12 +26,18 @@ const DEFAULTS = Object.freeze({
 });
 const emptyMetrics = () => ({
   flightTime: null, jumpHeight: null, verticalDisplacement: null, squatDepth: null,
+  depthCategory: null, isHipsAtKneeLevel: null,
   kneeFlexion: null, hipFlexion: null, torsoLean: null, stanceWidthRatio: null, pauseDuration: null
 });
+const FOOT_KEYS = Object.values(FOOT_BASELINES);
 const baselineValid = (b) => b && ['baselineHipY', 'baselineFootY', 'torsoHeight', 'shoulderWidth']
   .every((key) => Number.isFinite(b[key])) && b.torsoHeight > 1e-6 && b.shoulderWidth > 1e-6 &&
-  b.baselineHipY >= 0 && b.baselineHipY <= 1 && b.baselineFootY >= 0 && b.baselineFootY <= 1;
-const signature = (b) => b && [b.baselineHipY, b.baselineFootY, b.torsoHeight, b.shoulderWidth].join('|');
+  b.baselineHipY >= 0 && b.baselineHipY <= 1 && b.baselineFootY >= 0 && b.baselineFootY <= 1 &&
+  // Legacy four-metric callers remain supported; partial new calibration is unsafe.
+  (FOOT_KEYS.every((key) => b[key] === undefined) ||
+    FOOT_KEYS.every((key) => Number.isFinite(b[key]) && b[key] >= 0 && b[key] <= 1));
+const signature = (b) => b && [b.baselineHipY, b.baselineFootY, b.torsoHeight, b.shoulderWidth,
+  ...FOOT_KEYS.map((key) => b[key])].join('|');
 
 /**
  * update(imageLandmarks, baseline, timestampMs, { worldLandmarks, aspectRatio }).
@@ -62,6 +75,8 @@ export class GestureClassifier {
     this.t_takeoff = null;
     this.t_landing = null;
     this._cooldownUntil = 0;
+    this.lastProvisionalAirborneTime = null;
+    this.provisionalLandingCooldown = 0;
   }
 
   /** Recalibration/stop: release an active duck once, then forget all motion. */
@@ -75,6 +90,26 @@ export class GestureClassifier {
     this._metrics = emptyMetrics();
     if (wasDucking) this.onActionTrigger('DUCK_END', { source: 'safety' });
     return this._publish(false, 'Awaiting stable neutral pose');
+  }
+
+  /** Reuse the verified final calibration hold, without dispatching old actions. */
+  completeCalibration(baseline, samples = []) {
+    this.reset(baseline);
+    if (!this.baseline || !samples.length) return this.metrics;
+    const check = new GestureClassifier({ thresholds: this.config });
+    for (const { landmarks, frame } of samples) {
+      const metrics = check.update(landmarks, baseline, frame.timestamp, frame);
+      if (!metrics.valid || !metrics.neutral || metrics.state !== GestureState.NEUTRAL) return this.metrics;
+    }
+    if (!check.metrics.armed) return this.metrics;
+    // Keep the capture-time velocity/history so the next live frame is continuous.
+    this._previous = check._previous;
+    this._lastTimestamp = check._lastTimestamp;
+    this._upVelocity = check._upVelocity;
+    this._neutralSince = check._neutralSince;
+    this._armed = true;
+    this._metrics = { ...check._metrics };
+    return this._publish(true, null, { angleSource: check.metrics.angleSource, upwardVelocity: this._upVelocity, neutral: true });
   }
 
   /** DUCK_END on invalidation is a safety release, not a completed repetition. */
@@ -118,9 +153,10 @@ export class GestureClassifier {
     const torsoLean = calculateTorsoLean({ ...midShoulder, x: midShoulder.x * aspect }, { ...midHip, x: midHip.x * aspect });
     const stanceWidthRatio = calculateStanceWidthRatio(points[27], points[28], this.baseline.shoulderWidth);
     if (torsoLean === null || stanceWidthRatio === null) return null;
+    const depth = classifySquatDepth(hipFlexion, kneeFlexion, midHip.y, midKnee.y);
     return {
       hipY: midHip.y, kneeFlexion, hipFlexion, torsoLean, stanceWidthRatio,
-      squatDepth: classifySquatDepth(hipFlexion, kneeFlexion, midHip.y, midKnee.y),
+      ...depth, squatDepth: depth.depthCategory, // Preserve the existing metrics alias.
       angleSource: useWorld ? 'world-3d' : 'image-3d-estimate'
     };
   }
@@ -151,14 +187,34 @@ export class GestureClassifier {
     }
     this._previous = { hipY: pose.hipY, time: timestamp };
     const drop = (pose.hipY - b.baselineHipY) / b.torsoHeight;
-    const contact = (index) => Math.abs(points[index].y - b.baselineFootY) <= c.groundTolerance * b.torsoHeight;
+    const tolerance = groundContactTolerance(b, c.groundTolerance);
+    const footRise = (index) => (b[FOOT_BASELINES[index]] ?? b.baselineFootY) - points[index].y;
+    const contact = (index) => Math.abs(footRise(index)) <= tolerance;
     const leftGround = contact(29) || contact(31), rightGround = contact(30) || contact(32);
     const bothGround = leftGround && rightGround, anyGround = leftGround || rightGround;
-    const airborne = [29, 30, 31, 32].every((index) => b.baselineFootY - points[index].y > c.footLift * b.torsoHeight);
+    // Keep takeoff strictly above contact even when the absolute tolerance dominates.
+    const liftThreshold = Math.max(c.footLift * b.torsoHeight, tolerance + 0.02 * b.torsoHeight);
+    const airborne = [29, 30, 31, 32].every((index) => footRise(index) > liftThreshold);
     const neutral = bothGround && Math.abs(drop) <= c.neutralHipTolerance &&
       pose.kneeFlexion < c.neutralKneeFlexion && Math.abs(this._upVelocity) <= c.stillVelocity;
     const { hipY, angleSource, ...live } = pose;
     Object.assign(this._metrics, live);
+
+    // Even a sub-debounce flight can end in an impact bend. Remember observed
+    // foot clearance independently of hip speed/action confirmation, then recover
+    // through the same neutral gate as a confirmed jump (no invented jump metrics).
+    if (this.state === GestureState.NEUTRAL) {
+      if ([29, 30, 31, 32].every((index) => footRise(index) > tolerance)) {
+        this.lastProvisionalAirborneTime = timestamp;
+      } else if (anyGround && this.lastProvisionalAirborneTime !== null) {
+        this.provisionalLandingCooldown = timestamp + c.cooldownMs;
+        this._cooldownUntil = this.provisionalLandingCooldown;
+        this.state = GestureState.LANDING_COOLDOWN;
+        this._armed = false;
+        this._candidate = null;
+        this._neutralSince = null;
+      }
+    }
 
     // Exactly one state branch per frame. Returning from duck/cooldown cannot
     // evaluate a second action trigger during the same update.
@@ -180,6 +236,7 @@ export class GestureClassifier {
         this._neutralSince = null;
         if (jump) {
           this.state = GestureState.JUMPING;
+          this.lastProvisionalAirborneTime = null;
           this.t_takeoff = this._candidate.since; // First qualifying frame, not end of debounce.
           this.t_landing = null;
           this._jump = { peakY: this._candidate.peakY };
@@ -236,10 +293,12 @@ export class GestureClassifier {
           this.state = GestureState.NEUTRAL;
           this._armed = true;
           this._candidate = null;
+          this.lastProvisionalAirborneTime = null;
+          this.provisionalLandingCooldown = 0;
         }
         break;
     }
-    return this._publish(true, null, { angleSource, upwardVelocity: this._upVelocity });
+    return this._publish(true, null, { angleSource, upwardVelocity: this._upVelocity, neutral });
   }
 
   _heldNeutral(neutral, timestamp) {
