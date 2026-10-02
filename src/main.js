@@ -3,6 +3,7 @@ import Phaser from 'phaser';
 import { GameScene } from './game/GameScene.js';
 import { PoseTracker } from './vision/PoseTracker.js';
 import { GestureClassifier } from './vision/GestureClassifier.js';
+import { PerformanceMonitor } from './analytics/PerformanceMonitor.js';
 
 const config = {
   type: Phaser.AUTO,
@@ -76,15 +77,73 @@ const metricFields = [
   ['stance-width', 'stanceWidthRatio', 2], ['pause-duration', 'pauseDuration', 2]
 ].map(([id, key, digits]) => ({ element: document.getElementById(id), key, digits }));
 const squatDepth = document.querySelector('#squat-depth');
+const performanceMonitor = new PerformanceMonitor();
+window.performanceMonitor = performanceMonitor;
+const performanceHUD = document.createElement('section');
+performanceHUD.id = 'performance-hud';
+performanceHUD.setAttribute('aria-label', 'Live pipeline performance');
+const performanceTitle = document.createElement('h4');
+performanceTitle.textContent = 'Live performance';
+performanceHUD.append(performanceTitle);
+const performanceFields = {};
+for (const [id, label] of [
+  ['camera-fps', 'Processing FPS'], ['inference-latency', 'Inference (rolling avg)'],
+  ['action-latency', 'Last accepted action']
+]) {
+  const row = document.createElement('p');
+  const value = document.createElement('span');
+  value.id = id;
+  value.textContent = '—';
+  row.append(`${label}: `, value);
+  performanceHUD.append(row);
+  performanceFields[id] = value;
+}
+const timingNote = document.createElement('small');
+timingNote.id = 'timing-source';
+performanceHUD.append(timingNote);
+const logPerformanceButton = document.createElement('button');
+logPerformanceButton.type = 'button';
+logPerformanceButton.textContent = 'Log performance summary';
+const resetPerformanceButton = document.createElement('button');
+resetPerformanceButton.type = 'button';
+resetPerformanceButton.textContent = 'Reset sample';
+performanceHUD.append(logPerformanceButton, resetPerformanceButton);
+panel.append(performanceHUD);
+
+function renderPerformance() {
+  const metrics = performanceMonitor.getLiveMetrics();
+  performanceFields['camera-fps'].textContent = metrics.cameraFps.toFixed(1);
+  performanceFields['inference-latency'].textContent = metrics.inferenceMs === null ? '—' : `${metrics.inferenceMs.toFixed(1)} ms`;
+  performanceFields['action-latency'].textContent = metrics.actionLatencyMs === null ? '—'
+    : `${metrics.actionLatencyMs.toFixed(1)} ms (${metrics.lastAction})`;
+  timingNote.textContent = !metrics.active ? 'Camera stopped / paused.'
+    : metrics.captureSource === 'camera-capture' ? 'Camera capture → game state. Last action only.'
+      : 'Browser frame → game state estimate; sensor delay unavailable.';
+}
+const logPerformance = () => performanceMonitor.logSummary();
+const resetPerformance = () => { performanceMonitor.reset(); renderPerformance(); };
+logPerformanceButton.addEventListener('click', logPerformance);
+resetPerformanceButton.addEventListener('click', resetPerformance);
+// Throttle HUD work; the profiler timestamps every processed frame independently.
+const performanceTimer = setInterval(renderPerformance, 250);
+renderPerformance();
+let activeFrame = null;
+let streamActive = false;
 let visionStatus = state.textContent;
 const classifier = new GestureClassifier({
-  onActionTrigger(action) {
+  onActionTrigger(action, context = {}) {
     const scene = game.scene.getScene('GameScene');
     // Do not queue physical actions until Phaser has created its player body.
     if (!scene?.player?.body) return;
-    if (action === 'JUMP') scene.jump();
-    else if (action === 'DUCK_START') scene.duck(true);
-    else if (action === 'DUCK_END') scene.duck(false);
+    let accepted = false;
+    if (action === 'JUMP') accepted = scene.jump();
+    else if (action === 'DUCK_START') accepted = scene.duck(true);
+    else if (action === 'DUCK_END') accepted = scene.duck(false);
+    // Phaser commands mutate body/state synchronously. Exclude rejected commands,
+    // reset/recovery releases, and calls without a matched camera inference frame.
+    if (accepted === true && context.source === 'pose' && activeFrame) {
+      performanceMonitor.recordAction(action, activeFrame, performance.now());
+    }
     game.events.emit('gesture:action', action);
   },
   onMetricsUpdate(metrics) {
@@ -108,6 +167,13 @@ window.gestureClassifier = classifier;
 let starting = false;
 let disposed = false;
 const tracker = new PoseTracker(video, canvas, {
+  onFrameMetrics(frame) { performanceMonitor.recordInference(frame); },
+  onStreamStateChange({ active, settings }) {
+    streamActive = active;
+    if (settings) performanceMonitor.setCameraSettings(settings);
+    performanceMonitor.setActive(active && !document.hidden);
+    renderPerformance();
+  },
   onStatusChange(statusText) {
     visionStatus = statusText;
     if (statusText !== 'Tracking — calibrated' || !classifier.metrics?.valid) state.textContent = statusText;
@@ -128,7 +194,9 @@ const tracker = new PoseTracker(video, canvas, {
       if (!baseline) classifier.reset();
       else classifier.invalidate();
     } else {
-      classifier.update(landmarks, baseline, frame.timestamp ?? performance.now(), frame);
+      activeFrame = frame;
+      try { classifier.update(landmarks, baseline, frame.timestamp ?? performance.now(), frame); }
+      finally { activeFrame = null; }
     }
   }
 });
@@ -183,6 +251,11 @@ const onPageHide = () => {
   void tracker.stop();
 };
 window.addEventListener('pagehide', onPageHide);
+const onVisibilityChange = () => {
+  performanceMonitor.setActive(streamActive && !document.hidden);
+  renderPerformance();
+};
+document.addEventListener('visibilitychange', onVisibilityChange);
 
 if (import.meta.hot) {
   import.meta.hot.dispose(() => {
@@ -192,13 +265,19 @@ if (import.meta.hot) {
     restartButton.removeEventListener('click', restartRun);
     game.events.off('runner:restartRequested', onRunnerRestart);
     window.removeEventListener('pagehide', onPageHide);
+    document.removeEventListener('visibilitychange', onVisibilityChange);
+    clearInterval(performanceTimer);
+    logPerformanceButton.removeEventListener('click', logPerformance);
+    resetPerformanceButton.removeEventListener('click', resetPerformance);
     void tracker.stop();
     classifier.reset();
     for (const row of addedMetricRows) row.remove();
     controls.remove();
+    performanceHUD.remove();
     game.destroy(true);
     if (window.game === game) delete window.game;
     if (window.poseTracker === tracker) delete window.poseTracker;
     if (window.gestureClassifier === classifier) delete window.gestureClassifier;
+    if (window.performanceMonitor === performanceMonitor) delete window.performanceMonitor;
   });
 }

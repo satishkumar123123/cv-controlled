@@ -65,7 +65,7 @@ beforeEach(() => {
   ctx = Object.fromEntries(['clearRect', 'drawImage', 'beginPath', 'moveTo', 'lineTo', 'stroke', 'arc', 'fill'].map((key) => [key, vi.fn()]));
   video = { videoWidth: 640, videoHeight: 480, readyState: 4, currentTime: 1, play: vi.fn(async () => {}), pause: vi.fn() };
   canvas = { width: 640, height: 480, getContext: () => ctx };
-  callbacks = { onPoseUpdate: vi.fn(), onStatusChange: vi.fn(), onCalibrationComplete: vi.fn() };
+  callbacks = { onPoseUpdate: vi.fn(), onStatusChange: vi.fn(), onCalibrationComplete: vi.fn(), onFrameMetrics: vi.fn(), onStreamStateChange: vi.fn() };
   tracker = new PoseTracker(video, canvas, callbacks);
 });
 
@@ -204,6 +204,62 @@ describe('standing calibration and input validity', () => {
 });
 
 describe('runtime lifecycle', () => {
+  it('times inference at result entry and forwards the same captured frame through calibration/classification', async () => {
+    video.requestVideoFrameCallback = vi.fn(() => 456);
+    video.cancelVideoFrameCallback = vi.fn();
+    track.getSettings = () => ({ width: 640, height: 480, frameRate: 30 });
+    await tracker.init();
+    expect(callbacks.onStreamStateChange).toHaveBeenLastCalledWith({ active: true, settings: { width: 640, height: 480, frameRate: 30 } });
+    hold();
+    now = 3030;
+    sdk.poses[0].send.mockImplementationOnce(async () => {
+      now = 3050;
+      sdk.poses[0].results({ image: video, poseLandmarks: pose() });
+    });
+    callbacks.onPoseUpdate.mockImplementationOnce(() => { now += 40; });
+    await video.requestVideoFrameCallback.mock.lastCall[0](3030, { captureTime: 3020, presentationTime: 3025 });
+    expect(callbacks.onFrameMetrics).toHaveBeenLastCalledWith(expect.objectContaining({
+      frameId: 1, capturedAt: 3020, inferenceStartedAt: 3030, inferenceEndedAt: 3050, captureSource: 'camera-capture', stale: false
+    }));
+    expect(callbacks.onPoseUpdate.mock.lastCall[2]).toMatchObject({ frameId: 1, timestamp: 3020, capturedAt: 3020, inferenceEndedAt: 3050 });
+    expect(now).toBe(3090); // Consumer work was NOT included in inference time.
+    await tracker.stop();
+    expect(video.cancelVideoFrameCallback).toHaveBeenCalledWith(456);
+    expect(callbacks.onStreamStateChange).toHaveBeenLastCalledWith({ active: false });
+  });
+
+  it.each([
+    [{ presentationTime: 10 }, 'video-presentation', 10],
+    [{ captureTime: NaN, presentationTime: 1000 }, 'frame-acquisition', 20],
+    [{}, 'frame-acquisition', 20]
+  ])('labels timestamp fallback and counts a no-pose calibration result: %j', async (metadata, source, capturedAt) => {
+    await tracker.init();
+    now = 20;
+    sdk.poses[0].send.mockImplementationOnce(async () => {
+      now = 40;
+      sdk.poses[0].results({ image: video });
+    });
+    await requestAnimationFrame.mock.lastCall[0](20, metadata);
+    expect(callbacks.onFrameMetrics).toHaveBeenLastCalledWith(expect.objectContaining({
+      capturedAt, captureSource: source, inferenceStartedAt: 20, inferenceEndedAt: 40
+    }));
+    expect(tracker.baseline).toBeNull();
+  });
+
+  it('counts delayed inference but discards its pose; does not report a stopped in-flight result', async () => {
+    await tracker.init();
+    sdk.poses[0].send.mockImplementationOnce(async () => {
+      now = 600;
+      sdk.poses[0].results({ image: video, poseLandmarks: pose() });
+    });
+    await requestAnimationFrame.mock.lastCall[0]();
+    expect(callbacks.onFrameMetrics).toHaveBeenLastCalledWith(expect.objectContaining({ stale: true, inferenceEndedAt: 600 }));
+    expect(tracker.baseline).toBeNull();
+    await tracker.stop();
+    sdk.poses[0].results({ image: video, poseLandmarks: pose() });
+    expect(callbacks.onFrameMetrics).toHaveBeenCalledOnce();
+  });
+
   it('forwards capture metadata and world landmarks without treating negative world coordinates as offscreen', () => {
     hold();
     const image = pose();

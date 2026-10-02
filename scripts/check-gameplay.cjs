@@ -189,6 +189,70 @@ mkdirSync(OUTPUT, { recursive: true });
     });
     assert.equal(await page.evaluate(() => window.game.scene.getScene('GameScene').input.keyboard.listenerCount('keydown-SPACE')), 1);
     console.log('PASS: scene shutdown/recreation cleans up listeners and bodies');
+    // Exercise the new browser frame callback with an actual video source. This
+    // is a generated canvas stream, NOT a webcam/model performance benchmark.
+    await page.evaluate(async () => {
+      const source = document.createElement('canvas');
+      source.width = source.height = 32;
+      const context = source.getContext('2d');
+      const video = document.querySelector('#webcam');
+      const stream = source.captureStream(30);
+      video.srcObject = stream;
+      let draw = 0;
+      const timer = setInterval(() => { context.fillStyle = draw++ % 2 ? 'red' : 'blue'; context.fillRect(0, 0, 32, 32); }, 30);
+      let callback, timeout;
+      try {
+        await new Promise((resolve, reject) => {
+          timeout = setTimeout(() => reject(Error('No video-frame callback on hidden video')), 3000);
+          callback = video.requestVideoFrameCallback(resolve);
+          video.play().catch(reject);
+        });
+      } finally {
+        clearInterval(timer); clearTimeout(timeout);
+        video.cancelVideoFrameCallback(callback);
+        stream.getTracks().forEach((track) => track.stop());
+        video.srcObject = null;
+      }
+    });
+    console.log('PASS: native video-frame callback works with the hidden webcam element');
+    await page.evaluate(async () => {
+      const tracker = window.poseTracker, monitor = window.performanceMonitor;
+      const s = window.game.scene.getScene('GameScene');
+      const baseline = { baselineHipY: 0.45, baselineFootY: 0.87, torsoHeight: 0.25, shoulderWidth: 0.2 };
+      const points = (lift) => {
+        const p = Array.from({ length: 33 }, () => ({ x: 0.5, y: 0.1, z: 0, visibility: 1 }));
+        for (const [left, right, y] of [[11, 12, 0.2], [23, 24, 0.45], [25, 26, 0.65], [27, 28, 0.85], [29, 30, 0.87], [31, 32, 0.87]]) {
+          p[left] = { x: 0.4, y: y - lift, z: 0, visibility: 1 };
+          p[right] = { x: 0.6, y: y - lift, z: 0, visibility: 1 };
+        }
+        return p;
+      };
+      s.restartGame();
+      tracker.onCalibrationComplete(baseline);
+      tracker.onStreamStateChange({ active: true, settings: { width: 640, height: 480 } });
+      monitor.reset();
+      let frameId = 0;
+      async function feed(lift) {
+        const capturedAt = performance.now();
+        const frame = { frameId: ++frameId, capturedAt, timestamp: capturedAt, captureSource: 'frame-acquisition',
+          inferenceStartedAt: capturedAt, inferenceEndedAt: performance.now(), aspectRatio: 1 };
+        tracker.onFrameMetrics(frame);
+        tracker.onPoseUpdate(points(lift), baseline, frame);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      for (let i = 0; i < 15; i++) await feed(0);
+      for (let i = 0; i < 10; i++) await feed(i * 0.008);
+      if (monitor.getSummary().actions.JUMP !== 1 || s.player.body.velocity.y >= 0) throw Error('Camera frame was not paired with an accepted real Phaser jump');
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      if (!document.querySelector('#action-latency').textContent.includes('JUMP')) throw Error('Missing live action latency');
+    });
+    await page.getByRole('button', { name: 'Log performance summary', exact: true }).click();
+    await page.screenshot({ path: OUTPUT + '/runner-performance.png', fullPage: true });
+    await page.getByRole('button', { name: 'Reset sample', exact: true }).click();
+    assert.equal(await page.evaluate(() => window.performanceMonitor.getSummary().processedFrames), 0);
+    await page.evaluate(() => window.poseTracker.onStreamStateChange({ active: false }));
+    assert.equal(await page.locator('#camera-fps').textContent(), '0.0');
+    console.log('PASS: synthetic frame timestamps reach real Phaser, performance HUD and summary/reset controls');
     assert.deepEqual(errors, []);
     console.log('PASS: no browser JavaScript errors; Chromium ' + await browser.version());
   } finally {
