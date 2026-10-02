@@ -39,21 +39,92 @@ or posture accuracy.
 new PoseTracker(video, canvas, {
   onCalibrationComplete(baselineData) { /* baseline saved */ },
   onStatusChange(statusText) { /* display status */ },
-  onPoseUpdate(landmarks, baseline) {
+  onPoseUpdate(landmarks, baseline, frame) {
     if (!landmarks) {
       // Invalidate action/velocity history. Missing input is NOT a body state.
       return;
     }
     // Required landmarks are visible (>= 0.65) and filtered with a light EMA.
     // Non-required invisible landmarks may be null; preserve landmark indices.
+    // frame contains timestamp (capture ms), aspectRatio and worldLandmarks.
   }
 });
 ```
 
 `main.js` relays these callbacks as Phaser `game.events` events `pose:calibrated`
 and `pose:update`, and stores `poseBaseline`, `poseLandmarks`, and
-`poseTrackingValid` in the game registry. Jump/duck classification is a separate
-next step; calibration and tracking loss never invoke game actions.
+`poseTrackingValid` in the game registry. It now feeds `GestureClassifier` and
+relays `gesture:action` and `gesture:metrics`. The scene jumps once on `JUMP`,
+ducks on `DUCK_START`, and returns upright on `DUCK_END`. The duck collision
+body changes height with the visual rectangle and keeps its feet anchored.
+
+## Gesture classification and metrics
+
+`GestureClassifier.update(landmarks, baseline, timestampMs, frame)` consumes
+monotonic capture timestamps. Constructor callbacks are `onActionTrigger(action)`
+and `onMetricsUpdate(metrics)`. `reset(baseline)` starts fresh calibration history;
+`invalidate(reason)` discards incomplete measurements and requires recovery.
+
+| State | Trigger / behavior |
+| --- | --- |
+| NEUTRAL | Arm after 120 ms of stable, grounded standing. A jump needs all four heel/toe markers raised over 0.08 torso heights plus hip upward velocity over 0.6 torso heights/s for 35 ms. Duck needs hip drop over 0.15 torso heights, average knee flexion over 40°, both feet grounded, sustained for 120 ms. |
+| JUMPING | Ignore further action triggers. Contact by either heel/toe can establish landing after at least 100 ms of flight; require 30 ms of sustained contact and no substantial upward hip velocity. Save first-contact time, flight estimate and peak hip rise. |
+| LANDING_COOLDOWN | Block actions for at least 250 ms after confirmed landing AND until stable neutral returns. A prolonged landing knee bend cannot become a duck. |
+| DUCKING | Hold duck until hips return within 0.05 torso heights of baseline for 80 ms. Count a bottom pause only near the deepest observed position with near-zero vertical velocity. |
+
+Thresholds can be overridden via the constructor's `thresholds` object. See
+`DEFAULTS` in the classifier for all values. Distances use calibrated torso height;
+velocity uses torso heights per second, with time-aware smoothing. Ground-contact
+tolerance is 0.06 torso heights around the calibrated average foot Y.
+
+Missing/low-confidence required landmarks, invalid geometry, frame gaps over
+200 ms or flights longer than 2 s discard incomplete measurements. Tracking loss
+during a duck emits one `DUCK_END` to release the player safely; this is a
+cancellation, not a successful repetition. Reacquiring a crouched/airborne person
+cannot trigger a new action until they stand neutrally again. Active ducks remain
+exclusive: leaving the ground during a duck cancels it; return to standing before
+the next jump. This conservative rule can miss jumps with a long, deep preparatory
+crouch. No update emits simultaneous jump and duck actions.
+
+| Payload field | Meaning / units |
+| --- | --- |
+| flightTime | Last completed flight, seconds; null until landing. |
+| jumpHeight | `9.81 * flightTime² / 8`, meters; estimated, not a direct height measurement. |
+| verticalDisplacement | Peak image hip rise above calibration, fraction of image height (not meters). |
+| kneeFlexion / hipFlexion | Bilateral average in degrees; straight neutral = 0°. |
+| torsoLean | 2D torso inclination from image up, degrees; assumes a level camera. |
+| stanceWidthRatio | Image-plane ankle distance divided by calibrated image shoulder width. |
+| squatDepth | Requested angle-band classification, or Standing/Transition. |
+| pauseDuration | Time at the deepest stable duck position, seconds; pauses at shallower positions are discarded when moving appreciably deeper. |
+| valid / reason | Whether current pose geometry is usable and, if not, why. Invalid observations clear displayed measurements. |
+| state / armed / angleSource | FSM state, readiness after recovery, and world-3d or image-3d-estimate. |
+
+Joint angles prefer filtered MediaPipe world landmarks. When world landmarks are
+absent, normalized image XYZ is converted to a common scale using image aspect
+ratio and marked `image-3d-estimate`. Provided world landmarks with low visibility
+are rejected instead of silently replaced. Hip-relative world positions cannot
+measure global jump translation; all ground/hip movement uses image coordinates.
+The three-point hip angle is an unsigned thigh-to-torso proxy and does not isolate
+sagittal flexion, extension or abduction. Single-camera occlusion/orientation and
+model depth error affect joint-angle accuracy.
+
+The requested squat labels use these inclusive bands: quarter (hip/knee 40–60°),
+half (70–90°), parallel (hip 90–100°, knee 90–110°, or hips within 0.02 image height
+of knee level while both flexions are at least 40°), deep/full (hip 110–130°, knee
+120–150°). Deep takes priority over parallel, then half, then quarter. Gaps and
+conflicting ranges stay Transition. These are task-specific heuristics, not a
+universal physiotherapy grading protocol.
+
+Flight timing is estimated from landmark thresholds at camera frame resolution.
+Using the first qualifying takeoff/contact frames removes debounce duration from
+the reported flight, but EMA lag, camera sampling and contact thresholds still
+introduce error. The ballistic formula also assumes the same center-of-mass height
+at takeoff and landing; changes in posture can bias it. Physical reference testing
+is necessary before making accuracy claims.
+
+Coordinate and measurement references:
+- [MediaPipe Pose output coordinate definitions](https://chuoling.github.io/mediapipe/solutions/pose.html#output)
+- [Error in jump height estimation using the flight time method](https://pmc.ncbi.nlm.nih.gov/articles/PMC11368081/)
 
 ## Runtime and checks
 
@@ -65,8 +136,9 @@ next step; calibration and tracking loss never invoke game actions.
 - `camera_utils` is pinned to its published `0.3.1675466862` version. Its metadata
   scheduling hook is replaced by a cancellable, sequential frame loop because
   the package's built-in loop does not cancel its RAF chain on stop.
-- `npm test` covers synthetic pose sequences, calibration, visibility loss,
-  filtering, rendering calls, and mocked camera/runtime lifecycle errors.
+- `npm test` covers analytic geometry, requested depth bands, synthetic jump/duck
+  sequences sampled at 30/60 FPS, landing recovery, tracking loss, calibration,
+  filtering, rendering calls, mocked camera lifecycle and game/DOM integration.
 - `npm run build` verifies the Vite production bundle.
 - Physical-webcam performance, real-person calibration reliability and browser
   WASM/WebGL execution still need testing on the target machine. No FPS or

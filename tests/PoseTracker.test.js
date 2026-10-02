@@ -204,6 +204,23 @@ describe('standing calibration and input validity', () => {
 });
 
 describe('runtime lifecycle', () => {
+  it('forwards capture metadata and world landmarks without treating negative world coordinates as offscreen', () => {
+    hold();
+    const image = pose();
+    const world = image.map((point) => ({ ...point, x: point.x - 0.5, y: point.y - 0.5 }));
+    tracker._frameStartedAt = 3010;
+    now = 3050;
+    tracker._handleResults({ image: video, poseLandmarks: image, poseWorldLandmarks: world });
+    const frame = callbacks.onPoseUpdate.mock.lastCall[2];
+    expect(frame.timestamp).toBe(3010);
+    expect(frame.aspectRatio).toBeCloseTo(4 / 3);
+    expect(frame.worldLandmarks[11].x).toBeCloseTo(-0.1);
+    world[25].visibility = 0.5;
+    now = 3100;
+    tracker._handleResults({ image: video, poseLandmarks: image, poseWorldLandmarks: world });
+    expect(callbacks.onPoseUpdate.mock.lastCall[2].worldLandmarks[25]).toBeNull();
+  });
+
   it('deduplicates startup and releases camera, model and scheduled work on stop', async () => {
     await Promise.all([tracker.init(), tracker.init()]);
     expect(sdk.poses).toHaveLength(1);

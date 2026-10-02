@@ -18,6 +18,9 @@ const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
  * onPoseUpdate gets filtered landmarks only AFTER calibration. Null landmarks
  * mean tracking is invalid: clear motion history; do not infer any game action.
  * Invisible non-required landmarks are null within an otherwise valid array.
+ * A third callback argument provides capture timestamp, aspectRatio and filtered
+ * worldLandmarks for joint angles. World coordinates must not measure jumps:
+ * their origin follows the hips, unlike image coordinates used for calibration.
  */
 export class PoseTracker {
   constructor(videoElement, canvasElement, {
@@ -166,6 +169,7 @@ export class PoseTracker {
 
   _invalidate(status, force = false) {
     this._smoothed = null;
+    this._smoothedWorld = null;
     this._calibration = null;
     if (this._inputValid || force) {
       this._inputValid = false;
@@ -180,12 +184,16 @@ export class PoseTracker {
       point.x >= 0 && point.x <= 1 && point.y >= 0 && point.y <= 1;
   }
 
-  _filter(landmarks, dt) {
+  _filter(landmarks, dt, world = false) {
     // Time-adjusted EMA gives approximately equal lag at 30 and 60 FPS.
     const alpha = 1 - (1 - this.emaAlpha) ** (Math.max(1, dt) / (1000 / 30));
-    const previous = this._smoothed;
-    this._smoothed = landmarks.map((point, index) => {
-      if (!this._visible(point)) return null;
+    const key = world ? '_smoothedWorld' : '_smoothed';
+    const previous = this[key];
+    this[key] = landmarks.map((point, index) => {
+      const visible = world
+        ? point && ['x', 'y', 'z', 'visibility'].every((axis) => Number.isFinite(point[axis])) && point.visibility >= this.visibilityThreshold
+        : this._visible(point);
+      if (!visible) return null;
       const old = previous?.[index];
       const next = { ...point };
       if (old) {
@@ -198,7 +206,7 @@ export class PoseTracker {
       // Never smooth visibility or preserve an invisible landmark.
       return next;
     });
-    return this._smoothed;
+    return this[key];
   }
 
   _handleResults(results) {
@@ -215,13 +223,23 @@ export class PoseTracker {
       return;
     }
     const landmarks = this._filter(raw, dt);
+    const world = results.poseWorldLandmarks?.map((point, index) => point && ({
+      ...point,
+      visibility: Math.min(point.visibility ?? raw[index]?.visibility ?? 0, raw[index]?.visibility ?? 0)
+    }));
+    const worldLandmarks = world ? this._filter(world, dt, true) : null;
+    if (!world) this._smoothedWorld = null;
     this._draw(results.image, landmarks);
     if (!this.baseline) this._calibrate(raw, landmarks, now);
     if (!this.baseline) return;
     this._setStatus('Tracking — calibrated');
     this._inputValid = true;
     // Consumers cannot mutate the filter's history.
-    this.onPoseUpdate(landmarks.map((point) => point && { ...point }), this.baseline);
+    this.onPoseUpdate(landmarks.map((point) => point && { ...point }), this.baseline, {
+      timestamp: this._frameStartedAt ?? now,
+      aspectRatio: (this.video.videoWidth || 640) / (this.video.videoHeight || 480),
+      worldLandmarks: worldLandmarks?.map((point) => point && { ...point }) ?? null
+    });
   }
 
   _measure(landmarks) {

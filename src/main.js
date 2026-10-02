@@ -2,6 +2,7 @@ import './style.css';
 import Phaser from 'phaser';
 import { GameScene } from './game/GameScene.js';
 import { PoseTracker } from './vision/PoseTracker.js';
+import { GestureClassifier } from './vision/GestureClassifier.js';
 
 const config = {
   type: Phaser.AUTO,
@@ -48,26 +49,81 @@ state.textContent = 'Click Start camera, then stand fully in view.';
 // The canvas draws the camera image and skeleton together, mirrored by CSS.
 video.style.visibility = 'hidden';
 
+// Add the remaining metrics without requiring edits to the existing HTML.
+const addedMetricRows = [];
+for (const [id, label, unit] of [
+  ['hip-angle', 'Hip Flexion', '°'], ['torso-lean', 'Torso Lean', '°'],
+  ['stance-width', 'Stance / Shoulder Width', ''],
+  ['vertical-displacement', 'Peak Hip Rise', ' frame height'],
+  ['pause-duration', 'Bottom Pause', ' s']
+]) {
+  if (document.getElementById(id)) continue;
+  const row = document.createElement('p');
+  const value = document.createElement('span');
+  value.id = id;
+  value.textContent = '—';
+  row.append(`${label}: `, value, unit);
+  panel.insertBefore(row, controls);
+  addedMetricRows.push(row);
+}
+const metricFields = [
+  ['flight-time', 'flightTime', 3], ['jump-height', 'jumpHeight', 3],
+  ['vertical-displacement', 'verticalDisplacement', 3], ['knee-angle', 'kneeFlexion', 1],
+  ['hip-angle', 'hipFlexion', 1], ['torso-lean', 'torsoLean', 1],
+  ['stance-width', 'stanceWidthRatio', 2], ['pause-duration', 'pauseDuration', 2]
+].map(([id, key, digits]) => ({ element: document.getElementById(id), key, digits }));
+const squatDepth = document.querySelector('#squat-depth');
+let visionStatus = state.textContent;
+const classifier = new GestureClassifier({
+  onActionTrigger(action) {
+    const scene = game.scene.getScene('GameScene');
+    // Do not queue physical actions until Phaser has created its player body.
+    if (!scene?.player?.body) return;
+    if (action === 'JUMP') scene.jump();
+    else if (action === 'DUCK_START') scene.duck(true);
+    else if (action === 'DUCK_END') scene.duck(false);
+    game.events.emit('gesture:action', action);
+  },
+  onMetricsUpdate(metrics) {
+    state.textContent = metrics.valid
+      ? `${metrics.state}${metrics.state === 'NEUTRAL' && !metrics.armed ? ' — stand still to rearm' : ''}`
+      : visionStatus === 'Tracking — calibrated' ? metrics.reason ?? 'Waiting for valid pose' : visionStatus;
+    for (const { element, key, digits } of metricFields) {
+      if (element) element.textContent = metrics.valid && Number.isFinite(metrics[key]) ? metrics[key].toFixed(digits) : '—';
+    }
+    if (squatDepth) squatDepth.textContent = metrics.valid ? metrics.squatDepth ?? '—' : '—';
+    game.registry.set('gestureMetrics', metrics);
+    game.registry.set('gestureState', metrics.state);
+    game.events.emit('gesture:metrics', metrics);
+  }
+});
+window.gestureClassifier = classifier;
+
 let starting = false;
 let disposed = false;
 const tracker = new PoseTracker(video, canvas, {
   onStatusChange(statusText) {
-    state.textContent = statusText;
+    visionStatus = statusText;
+    if (statusText !== 'Tracking — calibrated' || !classifier.metrics?.valid) state.textContent = statusText;
     updateControls();
   },
   onCalibrationComplete(baselineData) {
+    classifier.reset(baselineData);
     game.registry.set('poseBaseline', baselineData);
     game.events.emit('pose:calibrated', baselineData);
   },
-  onPoseUpdate(landmarks, baseline) {
-    // Null input means tracking loss/recalibration/stop, never a game action.
-    // A future movement detector must reset its velocity/action history here.
+  onPoseUpdate(landmarks, baseline, frame = {}) {
+    // Invalid input cancels incomplete measurements and releases active duck.
     game.registry.set('poseLandmarks', landmarks);
     game.registry.set('poseBaseline', baseline);
     game.registry.set('poseTrackingValid', landmarks !== null && baseline !== null);
     game.events.emit('pose:update', landmarks, baseline);
-    // Jump/duck classification belongs in a separate detector. Calibration and
-    // landmark loss must never call GameScene.jump() or GameScene.duck().
+    if (!landmarks) {
+      if (!baseline) classifier.reset();
+      else classifier.invalidate();
+    } else {
+      classifier.update(landmarks, baseline, frame.timestamp ?? performance.now(), frame);
+    }
   }
 });
 window.poseTracker = tracker;
@@ -116,9 +172,12 @@ if (import.meta.hot) {
     calibrateButton.removeEventListener('click', recalibrate);
     window.removeEventListener('pagehide', onPageHide);
     void tracker.stop();
+    classifier.reset();
+    for (const row of addedMetricRows) row.remove();
     controls.remove();
     game.destroy(true);
     if (window.game === game) delete window.game;
     if (window.poseTracker === tracker) delete window.poseTracker;
+    if (window.gestureClassifier === classifier) delete window.gestureClassifier;
   });
 }

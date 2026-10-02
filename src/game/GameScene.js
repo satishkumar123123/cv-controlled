@@ -22,14 +22,15 @@ export class GameScene extends Phaser.Scene {
   }
 
   duck(isDucking) {
-    if (isDucking) {
-      this.player.setSize(30, 30);
-      this.player.setDisplaySize(30, 30);
-      this.player.fillColor = 0xeab308;
-    } else {
-      this.player.setSize(30, 60);
-      this.player.setDisplaySize(30, 60);
-      this.player.fillColor = 0x22c55e;
-    }
+    if (!this.player?.body) return;
+    const height = isDucking ? 30 : 60;
+    const feetY = this.player.body.bottom;
+    this.player.setSize(30, height);
+    this.player.setDisplaySize(30, height);
+    // Resize the Arcade collision body too, keeping the feet on the ground.
+    this.player.body.setSize(30, height);
+    this.player.y = feetY - height / 2;
+    this.player.body.updateFromGameObject();
+    this.player.fillColor = isDucking ? 0xeab308 : 0x22c55e;
   }
 }
