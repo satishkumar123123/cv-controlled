@@ -475,28 +475,34 @@ at eight obstacles; the live profiler stores at most 240 frame samples.
 
 ### Benchmark & Performance Table
 
-The following is the **requested target-device acceptance profile**. These
-values are engineering targets, **not measured results**. No physical laptop,
-accelerated GPU, CPU-utilization trace or heap profile was supplied or measured
-in this cloud environment. The empirical record is retained below for provenance.
+The following **user-supplied desktop reference profile is unmeasured**. It
+specifies a proposed local test environment and illustrative figures based on
+target hardware; it is **not an empirically validated physical-desktop run**.
+No corresponding session export, frame/action counts or heap trace was supplied.
+The existing measured cloud record remains below for provenance.
 
-| Metric / environment | Target profile | Measurement / acceptance evidence needed |
+| Metric / environment | Supplied reference profile | Validation status / interpretation |
 | --- | --- | --- |
-| Hardware | Modern 8-core Intel Core i7 / AMD Ryzen 7 / Apple Silicon-class laptop; 16 GB RAM; integrated/dedicated GPU; Chrome/Chromium with hardware acceleration | Record the exact chip, GPU, OS/browser versions and rendering backend; these are candidate configurations, not tested machines. |
-| Camera source | **640 × 480 @ 30/60 FPS** | Report negotiated camera settings and keep the whole body in view. Source FPS is separate from completed-result FPS. |
-| Model inference | **18–26 ms**, hardware WebGL target | Use the HUD/summary for mean/max after warm-up; retain per-frame observations separately to calculate min/p95. Measure the pinned Pose Lite implementation. |
-| Accepted-action latency | **38–52 ms**, target from the triggering frame to accepted Phaser body/state mutation | Includes extraction and the final FSM transition; earlier EMA/debounce frames and display scanout are outside the current profiler boundary. Identify the capture timestamp source. |
-| Render FPS | **58–60 FPS** on a 60 Hz display, target | Measure render/frame-time traces separately; the pose HUD reports processing throughput, not rendering. |
-| Camera processing FPS | Measure independently; aim for sustained **30 FPS** on a 30 Hz source | Sequential 18–26 ms inference cannot sustain 58–60 processed FPS: inference alone limits its theoretical ceiling to about **38.5–55.6 FPS**, before drawing/classification/scheduling overhead. A 60 FPS goal requires the entire processing path to fit within 16.7 ms. |
-| CPU utilization | **~12–18%**, target | Use an OS/browser profiler and state the denominator, sampling interval and process scope; the application does not measure CPU utilization. |
-| JavaScript heap | Stable **below 180 MB**, target | Record comparable post-GC heap snapshots across 40 restarts and an extended run. Report WASM, GPU and process memory separately; JS heap is not total browser memory. |
-| Game resource bounds | **8 pooled obstacles**, stable display/listener counts | Verified by 40 restart cycles and a five-minute real-Phaser simulation. This establishes object reuse, not the CPU or 180 MB heap targets. |
+| Hardware / OS | **Intel Core i7 (12th Gen) / Intel Iris Xe Graphics / Windows 11 (64-bit)** | Proposed configuration, not a tested-machine record. Capture the exact CPU model, RAM, GPU/driver and browser/Electron versions in the local report. |
+| Camera source | **640 × 480 @ 60 Hz** | Proposed capture settings; verify the negotiated settings. Source frame rate is separate from pose-processing and render FPS. |
+| Test duration | **120 seconds** | Planned measurement duration after warm-up; no completed 120 s local run is documented. |
+| Average model inference latency | **22.8 ms**, MediaPipe WebGL/WASM | Illustrative value for the pinned Pose Lite runtime; replace with the exported session mean from the physical machine. |
+| Average accepted-action latency | **46.5 ms**, triggering frame → inference/FSM processing → Phaser dispatch | Illustrative value; record the capture timestamp source, accepted-action counts and measured session mean. Earlier debounce frames are excluded from this profiler boundary. |
+| Camera processing FPS | **59.4 FPS — inconsistent with the supplied inference latency** | Not a valid measured throughput result for this sequential pipeline. At 22.8 ms per inference, the theoretical ceiling is **1000 / 22.8 ≈ 43.9 processed FPS**, before other work. Do not relabel this figure as render FPS without a separate measurement. |
+| JavaScript heap | **~140 MB** | Unmeasured reference value. Validate with comparable post-GC heap snapshots across restarts and the trial; WASM, GPU and process memory must be reported separately. |
+| Game resource bounds | **8 pooled obstacles**, stable display/listener counts | Verified separately by 40 restart cycles and a five-minute real-Phaser simulation. This establishes object reuse, not a measured 140 MB heap footprint. |
 
-The 38–52 ms target describes the **debounce-completing frame → dispatch** path.
+The 46.5 ms reference uses the **debounce-completing frame → dispatch** boundary.
 Candidate-onset → dispatch additionally contains the **35 ms jump / 120 ms duck
 debounce**, sampling delay and EMA history. A single latency range cannot describe
 both boundaries. Fixed 60 Hz physics likewise does not guarantee 60 Hz rendering
 or pose processing.
+
+To replace this profile with empirical local results, follow the benchmark
+protocol below using a 120 s measurement interval, enter the hardware notes and
+export the session JSON. Report
+inference latency and completed-result FPS from the same active interval, retain
+the action counts and timestamp source, and attach the separate heap trace.
 
 <details>
 <summary>Empirical cloud benchmark: measured software-WebGL comparator</summary>
