@@ -8,17 +8,22 @@ and live inference/action timing.
 
 The engineering priority is reliable control: one action per qualifying movement,
 stable recovery after landing, safe tracking loss, and bounded game resources.
-The submission includes **183 passing tests across six suites**, browser collision
+The submission includes **206 passing tests across eight suites**, browser collision
 and restart checks, a recorded cloud benchmark, and a target-device evaluation
 protocol. Physical-webcam performance and clinical measurement accuracy require
 separate validation on the evaluator's hardware.
+
+The complete [assignment compliance matrix and manual evaluation protocol](docs/ASSIGNMENT_AUDIT.md)
+identifies the implemented requirements and the remaining physical-device evidence.
+The supplied squat reference image matches the four angular bands documented below.
 
 | Evaluation criterion | Delivered capability | Evidence |
 | --- | --- | --- |
 | Webcam-controlled runner | Red jump hurdles, purple ceiling barriers, held duck, score/restart/protection | `GameScene.js`, `main.js`, real Phaser browser checks |
 | Reliable classification | Debounce, hysteresis, confirmed/provisional landing recovery, neutral rearming | `GestureClassifier.test.js`, `RegressionAudit.test.js` |
 | Calibration and visibility | Three-second standing hold, per-marker foot baselines, raw confidence gate | `PoseTracker.test.js`, calibration regression fixtures |
-| Movement analytics | Confidence-safe joint angles, independent squat metadata, flight-time height estimate | `Kinematics.test.js`, analytics DOM tests |
+| Movement analytics | Bilateral knee/hip/ankle angles, signed flexion/extension proxies, phase history, independent squat metadata, flight-time height estimate | `Kinematics.test.js`, `ActionRecorder.test.js`, analytics DOM tests |
+| Desktop delivery | Electron app, bundled model/WASM, permission handling, platform packaging | Desktop smoke check and packaging commands |
 | Performance instrumentation | Inference, accepted-action latency and completed-result FPS | `PerformanceMonitor.test.js`, raw benchmark JSON |
 | Reproduction and technical defense | Commands, exact thresholds/formulas, sources, limitations and device protocol | This README |
 
@@ -53,12 +58,51 @@ npm run build      # Production files in dist/
 npm run preview    # Serve the built app locally
 ```
 
+### Desktop application
+
+```bash
+npm ci
+npm run desktop       # Build and launch an Electron desktop window
+npm run desktop:pack  # Create an unpacked application under release/
+npm run desktop:dist  # Create a Windows portable EXE, macOS ZIP, or Linux ZIP on that OS
+```
+
+Node is required for source commands; packaged applications include their own
+runtime. Evaluate a Windows build on Windows and a macOS build on macOS. The
+provided packages are unsigned; signing/notarization is not configured.
+The GitHub Actions workflow tests the project and builds a Windows portable
+artifact. Download it from the successful workflow run's **Artifacts** section.
+
+`desktop/main.cjs` loads a stable secure `app://runner` origin, with renderer
+Node integration disabled, context isolation/sandboxing enabled, navigation
+restricted and camera-only permission handling. A camera permission dialog is
+shown after **Start camera**. Model assets and game assets are local; outgoing
+HTTP(S) requests are blocked in the desktop session. Closing the window releases
+its camera resources. The stable origin preserves the high score across launches.
+
+### Model download and offline assets
+
+`npm ci` downloads the pinned MediaPipe npm package. Its postinstall script
+copies Lite, graph and WASM/runtime files to generated `public/pose/`; build
+copies them into `dist/pose/`. `predev` and `prebuild` repeat this preparation.
+`index.html` loads the pinned `pose.js` and `camera_utils.js` as local classic
+scripts before the application module. These SDKs publish browser globals, not
+native named ES-module exports; treating them as named imports can pass Vite
+development checks but produce a `Pose is not a constructor` production error.
+`PoseSDK.js` validates their availability, and `test:model` exercises the built
+application with the real model to catch this regression.
+These generated model files are ignored by Git; no separate model URL or manual
+download is needed. The desktop package includes them and runs without a CDN.
+If installation was run with `--ignore-scripts`, run
+`node scripts/prepare-pose-assets.mjs` before starting. Electron's runtime binary
+also downloads during installation/first launch, so allow install-time internet.
+
 Camera access requires **HTTPS or localhost**. A plain HTTP LAN address generally
 cannot access the camera. Click **Start camera**, grant permission, and allow
 model assets to load. If access is denied, change the site's camera permission
 in browser settings and retry. Close other applications using the webcam if it
 is busy. Embedded deployments must also allow camera access in their iframe and
-Permissions Policy. The first model load needs internet access by default.
+Permissions Policy. Browser and desktop modes use the locally prepared models.
 
 ## Quick Demo & Testing Guide
 
@@ -81,6 +125,10 @@ Permissions Policy. The first model load needs internet access by default.
 6. **Restart:** after collision, click the game and press **R** (or **Space**),
    or click **Restart run** / the canvas **Restart** prompt. Return to neutral.
    Use **Recalibrate / Restart** if the camera or your standing position changes.
+7. **Review measurements:** open **Joint angles & action history** for live left/right
+   knee, hip and ankle angles and the last completed action's phase ranges. After
+   warm-up, reset the performance sample, enter hardware notes and click
+   **Export session JSON** to retain timing averages and numeric action samples.
 
 For an automated evaluator check, run `npm run test` and `npm run build`.
 For a real-device performance record, use **Reset sample** and **Log performance
@@ -188,6 +236,9 @@ as measurements of this repository.
 | `src/analytics/Kinematics.js` | Pure geometry and ballistic estimation with invalid-input guards |
 | `src/vision/GestureClassifier.js` | Temporal FSM, confidence checks, debouncing, recovery, repetition metrics |
 | `src/analytics/PerformanceMonitor.js` | Inference/action timing, processing FPS, session summaries and browser hardware hints |
+| `src/analytics/ActionRecorder.js` | Bounded per-action bilateral joint samples, preparation/takeoff/flight/landing ranges |
+| `src/analytics/SessionReport.js`, `src/ui/ActionAnalytics.js` | Session evidence export and live/historical angle presentation |
+| `desktop/` | Isolated Electron window, local asset protocol, video permission and packaging entry point |
 | `src/game/GameScene.js` | Arcade physics, obstacle pool, score, collision/restart and tracking pause |
 | `src/main.js` | Callback wiring, accepted-action timing, DOM analytics and performance HUD |
 
@@ -213,11 +264,11 @@ neutral recovery. Results older than **500 ms** are discarded for control. A
 250 ms watchdog invalidates hidden-tab/frozen-camera input; a separate **200 ms**
 classifier timestamp-gap limit prevents unsafe velocity estimates across gaps.
 
-Model/WASM files download from a version-pinned jsDelivr URL. Webcam frames and
-landmarks are not uploaded by this application. To avoid runtime CDN requests,
-copy all runtime/model files from the pinned pose package to a hosted static
-folder and pass that URL as `assetBaseUrl` to `PoseTracker`; keep relative asset
-names intact. Test that setup before claiming offline operation.
+The application passes `/pose` as `assetBaseUrl`, serving model/WASM files copied
+from the pinned npm package. The reusable `PoseTracker` class retains a pinned
+jsDelivr fallback for external callers that omit that option. Webcam frames and
+landmarks are not uploaded. Keep all generated relative asset names intact when
+hosting the production build.
 
 ## Detection logic and finite state machine
 
@@ -296,6 +347,20 @@ legitimately display 0°; an occluded knee must display **—**.
   This is an unsigned thigh-to-torso departure from straight neutral. It does
   not isolate anatomical sagittal flexion from extension/abduction or measure
   pelvic orientation.
+- **Signed hip flexion/extension:** project torso and thigh perpendicular to
+  the anatomical left-to-right hip vector `r`. Let `u` be projected unit torso-up,
+  `q` projected unit thigh and `f = u × r`. The signed estimate is
+  `atan2(q·f, −q·u) × 180/π`: positive flexion, negative extension, neutral 0°.
+  It uses MediaPipe's anatomical side labels and estimated XYZ body plane;
+  a degenerate plane returns `null`. This additional signed proxy does not alter
+  the original unsigned angle used for squat-band classification.
+- **Ankle dorsiflexion/plantarflexion:** `90° − angle(knee − ankle, toe − heel)`.
+  A shin perpendicular to the heel-to-foot-index segment is 0°; positive is
+  dorsiflexion and negative is plantarflexion. Left and right are shown separately.
+  A coincident/occluded foot segment returns `null`; the mean is available only
+  when both ankles are reliable. This is a 3D shin/foot proxy: foot rotation,
+  inversion, footwear and inferred depth can bias it. It is not a calibrated
+  clinical ankle measurement.
 - **Torso lean:** for t = midShoulder − midHip in aspect-corrected image XY,
   `acos(−t.y / ||t||) × 180/π`. Upright is 0°. Image up `(0, −1)` approximates
   gravity only with a level, fixed camera; forward/backward lean can be hidden
@@ -311,6 +376,21 @@ World coordinates are inferred from one RGB view; they are not depth-camera
 measurements. Hip-relative world translation must **not** be used to measure a
 jump. See [output coordinate definitions][pose-docs]. `angleSource` in the metrics
 payload identifies `world-3d` or `image-3d-estimate`.
+
+**Action and phase history:** the live bilateral panel shows knee flexion,
+signed hip flexion/extension and signed ankle dorsi/plantarflexion. The last
+completed action has min/max ranges for each side and phase. Jump preparation is
+a 500 ms look-back; takeoff is the first qualifying airborne frame; flight
+continues until confirmed foot contact; landing includes recovery to stable
+neutral. Candidate frames are relabeled with confirmed contact timestamps, so
+debounce does not erase takeoff/landing samples. These are visual threshold
+phases, not force-plate events. Duck records cover the crouch and bottom pause.
+
+`ActionRecorder` observes the FSM without issuing game commands. Invalid tracking
+discards an unfinished action. At most five completed actions, 600 samples per
+action and 64 preparation-buffer samples are kept. Longer records flag omitted
+samples, and their displayed ranges describe retained samples. Historical
+results are explicitly labeled; live unreliable values remain **—**.
 
 For flight time t in seconds and constant gravity g = 9.81 m/s²:
 
@@ -501,6 +581,11 @@ No accepted action means a null action average, never a fabricated zero.
    JSON.stringify(report, null, 2);
    ```
 
+   Alternatively, enter exact hardware/session notes in the HUD and click
+   **Export session JSON**. This includes the same performance summary plus
+   bounded bilateral angle/phase samples, units and validity conventions.
+   The app does not record camera video in this export.
+
 5. Save the JSON text with the tested git commit, trial date and protocol notes.
    Repeat three times. Report each trial's `activeSeconds`, `processedFrames`,
    `averageFps`, `averageInferenceMs`, `averageActionLatencyMs`, maxima and
@@ -616,10 +701,12 @@ blocks the browser's main thread.
 
 | Test file | Coverage |
 | --- | --- |
-| `tests/Kinematics.test.js` | 3D angles, straight/right-angle flexion, scale/translation invariance, squat boundaries/gaps/precedence, multiple ballistic fixtures including 0.5 s, confidence and degenerate geometry |
+| `tests/Kinematics.test.js` | 3D angles, knee/hip flexion, signed sagittal hip and ankle dorsi/plantarflexion, scale/rotation/translation invariance, squat boundaries/gaps/precedence, ballistic fixtures including 0.5 s, confidence and degenerate geometry |
 | `tests/GestureClassifier.test.js` | Jump → cooldown → neutral and duck → neutral sequences, landing-bend suppression, no simultaneous jump/duck, debounce, pause, visibility loss, timestamp gaps, world-coordinate selection, 30/60 FPS synthetic sampling |
 | `tests/PoseTracker.test.js` | Stillness calibration, raw visibility gate, EMA, canvas calls, camera failure/retry/cleanup, sequential scheduling, capture timing; hung startup/inference/disposal, bounded cancellation and late-session isolation |
 | `tests/PerformanceMonitor.test.js` | Known clock intervals, processing FPS, action/frame pairing, invalid samples, stale results, pauses, resets, bounded storage and hardware summaries |
+| `tests/ActionRecorder.test.js` | Real-classifier phase history, ankle/hip signs, held crouch, occlusion cancellation, foot-rotation rejection, bounded records and report integrity |
+| `tests/Desktop.test.js` | Local origin/file-path containment and camera-only permission policy |
 | `tests/main.test.js` | Real classifier wired to mocked Phaser/DOM, command acceptance, HUD metrics, summary/reset controls, startup cancellation/retry and invalid tracking flags/metrics for every lower-body landmark |
 | `tests/RegressionAudit.test.js` | Held airborne duck, provisional landing cooldown, divergent heel/toe calibration, high-barrier intersection, independent squat metadata; numeric overflow/underflow, exact knee-level boundary, malformed/replayed calibration, invalid frame intervals/deltas |
 
@@ -645,20 +732,44 @@ timings, same-step landing/duck/obstacle ordering, and a short physical jump
 followed by a rejected duck edge through the real classifier/main/Phaser stack.
 These are integration checks, **not webcam/model inference benchmarks**.
 
-Verification on 2026-10-04: **183 Vitest tests passed across all six suites**, production build passed,
-and the browser suite passed with no JavaScript errors. Environment: Linux
+Current verification on 2026-10-04: **206 Vitest tests passed across eight suites**;
+production build and the browser suite passed with no unhandled JavaScript errors.
+Environment: Linux
 6.18.44 x86_64 container, AMD EPYC 9V74 host-reported CPU, 8 available logical
 processors, Node.js 24.19.0, Chromium 153 using software WebGL. No physical
 webcam or target-laptop performance was measured. Vite reports a large main
 bundle warning due to the included Phaser/runtime code; the build completes.
 
-The final audit also exercised the actual pinned MediaPipe runtime with locally
-served installed model/WASM assets and Chromium's generated camera source.
-Inference, three stop/start cleanup cycles, permission-denied/no-camera/busy-camera
-fallbacks and successful retry passed without unhandled errors. Both development
-and production-preview pages had all required DOM bindings and one game canvas.
-This checks runtime integration with a synthetic camera; it does not establish
-real-person accuracy, hardware-accelerated performance or CDN availability.
+The production-model check uses actual pinned MediaPipe inference and local
+model/WASM assets with a generated canvas stream substituted for `getUserMedia`.
+Three stop/start cycles and injected permission-denied/no-camera/busy-camera
+failures pass, with ended tracks, no missing assets and no external requests.
+This specifically verifies the built SDK constructors and runtime, not human
+pose accuracy or physical-device camera availability.
+
+The assignment-completion update adds ankle/signed hip calculations, phase
+recording, session export, native desktop support and their regression checks.
+Run the production and native smoke checks after building (optional Playwright
+tooling as above):
+
+```bash
+npm run build
+npm run test:model
+npm run test:desktop
+# Linux headless CI: xvfb-run -a npm run test:desktop
+```
+
+The Electron smoke check passed against both the source app and the packaged
+Linux x64 executable from `npm run desktop:pack`: secure app origin, no renderer Node
+bridge, persistent storage, local model loading, the real application permission
+handler denying then allowing Chromium's generated camera, inference and stream
+cleanup. Root-container test launch disables the OS sandbox only for the test;
+normal desktop launch retains the configured sandbox. Windows/macOS runtime
+behavior still requires evaluation on those platforms. A generated camera checks
+integration, not human pose accuracy. Fill the
+[manual evaluation CSV](docs/manual-validation.csv) using the
+[different-user/speed protocol](docs/ASSIGNMENT_AUDIT.md) before reporting human
+accuracy or recording the optional physical-webcam demo.
 
 ## Failure modes and limitations
 

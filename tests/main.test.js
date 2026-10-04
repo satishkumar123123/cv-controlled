@@ -119,6 +119,18 @@ it('connects real classification to Phaser jump and all dashboard measurements',
   expect(app.game.registry.get('poseTrackingValid')).toBe(true);
 });
 
+it('renders bilateral angles, unavailable ankle geometry and completed per-phase history', () => {
+  for (let t = 0; t <= 1400; t += 20) feed(t, points(t >= 220 && t <= 720 ? .14 * Math.sin(Math.PI * (t - 220) / 500) : 0));
+  expect(text('knee-bilateral')).toBe('0.0 / 0.0');
+  expect(text('ankle-bilateral')).toBe('— / —'); // Coincident heel/toe fixture is not a real neutral ankle.
+  expect(text('last-action-summary')).toContain('completed jump');
+  expect(window.actionRecorder.getLast().phases.LANDING).toBeTruthy();
+  feed(1420, null);
+  expect(text('hip-bilateral')).toBe('— / —');
+  expect(text('knee-bilateral')).toBe('— / —');
+  expect(text('movement-phase')).toBe('Phase: —');
+});
+
 it('holds duck, releases it on missing input, clears metrics, and preserves calibration messages', () => {
   for (let t = 0; t <= 200; t += 20) feed(t);
   for (let t = 220; t <= 1000; t += 20) feed(t, points(0, true));

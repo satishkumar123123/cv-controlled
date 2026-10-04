@@ -1,0 +1,1 @@
+trial_id,commit,participant_code,camera_distance_m,lighting,movement,speed,expected_repetitions,correct_detections,missed_movements,false_events,repeated_events,accepted_game_actions,tracking_pauses,held_duck_release_notes,hardware_and_camera,session_json,reference_measurement_notes

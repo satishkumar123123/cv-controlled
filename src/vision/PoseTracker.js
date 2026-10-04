@@ -1,5 +1,4 @@
-import { Pose } from '@mediapipe/pose';
-import { Camera } from '@mediapipe/camera_utils';
+import { getPoseRuntime } from './PoseSDK.js';
 import { GestureClassifier, FOOT_BASELINES, groundContactTolerance } from './GestureClassifier.js';
 
 // Match the pinned package version. Override assetBaseUrl to self-host assets.
@@ -96,6 +95,7 @@ export class PoseTracker {
       }
       if (typeof WebAssembly === 'undefined') throw new Error('WebAssembly is unavailable in this browser.');
       this._setStatus('Loading pose model…');
+      const { Pose, Camera } = getPoseRuntime();
       this.baseline = null;
       this._invalidate();
       const pose = new Pose({ locateFile: (file) => `${this.assetBaseUrl}/${file}` });

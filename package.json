@@ -26,7 +26,15 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:browser": "node scripts/check-gameplay.cjs"
+    "test:browser": "node scripts/check-gameplay.cjs",
+    "postinstall": "node scripts/prepare-pose-assets.mjs",
+    "predev": "node scripts/prepare-pose-assets.mjs",
+    "prebuild": "node scripts/prepare-pose-assets.mjs",
+    "desktop": "npm run build && electron .",
+    "desktop:pack": "npm run build && electron-builder --dir",
+    "desktop:dist": "npm run build && electron-builder",
+    "test:desktop": "node scripts/check-desktop.cjs",
+    "test:model": "node scripts/check-model.cjs"
   },
   "dependencies": {
     "@mediapipe/camera_utils": "0.3.1675466862",
@@ -34,7 +42,38 @@
     "phaser": "^3.80.1"
   },
   "devDependencies": {
+    "electron": "44.5.1",
+    "electron-builder": "26.15.3",
     "vite": "^5.2.0",
     "vitest": "^1.4.0"
+  },
+  "main": "desktop/main.cjs",
+  "build": {
+    "appId": "com.cvcontrolled.runner",
+    "productName": "CV-Controlled Runner",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "desktop/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "npmRebuild": false,
+    "win": {
+      "target": "portable"
+    },
+    "mac": {
+      "target": "zip",
+      "category": "public.app-category.games",
+      "extendInfo": {
+        "NSCameraUsageDescription": "Use the webcam locally to detect jumps and crouches."
+      }
+    },
+    "linux": {
+      "target": "zip",
+      "category": "Game"
+    }
   }
 }

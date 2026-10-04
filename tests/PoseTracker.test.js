@@ -2,7 +2,7 @@ import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 
 const sdk = vi.hoisted(() => ({ poses: [], cameras: [], startError: null, initGate: null, sendGate: null,
   cameraGate: null, stopGate: null, closeGate: null, stream: null }));
-vi.mock('@mediapipe/pose', () => ({
+vi.mock('../src/vision/PoseSDK.js', () => ({ getPoseRuntime: () => ({
   Pose: class {
     constructor(config) {
       this.config = config;
@@ -13,9 +13,7 @@ vi.mock('@mediapipe/pose', () => ({
       sdk.poses.push(this);
     }
     onResults(callback) { this.results = callback; }
-  }
-}));
-vi.mock('@mediapipe/camera_utils', () => ({
+  },
   Camera: class {
     constructor(video, options) {
       this.video = video;
@@ -31,7 +29,7 @@ vi.mock('@mediapipe/camera_utils', () => ({
       sdk.cameras.push(this);
     }
   }
-}));
+}) }));
 import { PoseTracker, POSE_TIMEOUTS } from '../src/vision/PoseTracker.js';
 
 let now, track, ctx, video, canvas, callbacks, tracker;

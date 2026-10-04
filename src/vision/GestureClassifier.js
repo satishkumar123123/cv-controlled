@@ -1,5 +1,6 @@
 import {
   isVisibleLandmark, midpoint, calculateKneeFlexion, calculateHipFlexion,
+  calculateAnkleDorsiflexion, calculateHipSagittalAngle,
   calculateTorsoLean, calculateStanceWidthRatio, classifySquatDepth, estimateJumpHeight
 } from '../analytics/Kinematics.js';
 
@@ -27,6 +28,9 @@ const DEFAULTS = Object.freeze({
 const emptyMetrics = () => ({
   flightTime: null, jumpHeight: null, verticalDisplacement: null, squatDepth: null,
   depthCategory: null, isHipsAtKneeLevel: null,
+  leftKneeFlexion: null, rightKneeFlexion: null, leftHipFlexion: null, rightHipFlexion: null,
+  leftHipSagittalAngle: null, rightHipSagittalAngle: null,
+  leftAnkleDorsiflexion: null, rightAnkleDorsiflexion: null, ankleDorsiflexion: null,
   kneeFlexion: null, hipFlexion: null, torsoLean: null, stanceWidthRatio: null, pauseDuration: null
 });
 const FOOT_KEYS = Object.values(FOOT_BASELINES);
@@ -133,7 +137,9 @@ export class GestureClassifier {
   _publish(valid, reason = null, extra = {}) {
     this.metrics = Object.freeze({
       ...this._metrics, valid, reason, state: this.state, armed: this._armed,
-      timestamp: this._lastTimestamp, ...extra
+      timestamp: this._lastTimestamp, ...extra,
+      takeoffTimestamp: this.t_takeoff, landingTimestamp: this.t_landing,
+      duckStartedAt: this._duck?.startedAt ?? null
     });
     this.onMetricsUpdate(this.metrics);
     return this.metrics;
@@ -149,6 +155,12 @@ export class GestureClassifier {
     const joints = useWorld ? world : points.map((p) => p && ({ ...p, x: p.x * aspect, z: p.z * aspect }));
     const knee = [calculateKneeFlexion(joints[23], joints[25], joints[27]), calculateKneeFlexion(joints[24], joints[26], joints[28])];
     const hip = [calculateHipFlexion(joints[11], joints[23], joints[25]), calculateHipFlexion(joints[12], joints[24], joints[26])];
+    // Optional metric geometry must not change reliable jump/duck decisions.
+    // A missing world foot or degenerate heel→toe vector leaves its angle null.
+    const ankle = [calculateAnkleDorsiflexion(joints[25], joints[27], joints[29], joints[31]),
+      calculateAnkleDorsiflexion(joints[26], joints[28], joints[30], joints[32])];
+    const signedHip = [calculateHipSagittalAngle(joints[11], joints[23], joints[25], joints[23], joints[24]),
+      calculateHipSagittalAngle(joints[12], joints[24], joints[26], joints[23], joints[24])];
     if ([...knee, ...hip].some((value) => value === null)) return null;
     const midHip = midpoint(points[23], points[24], 2);
     const midKnee = midpoint(points[25], points[26], 2);
@@ -162,6 +174,10 @@ export class GestureClassifier {
     const depth = classifySquatDepth(hipFlexion, kneeFlexion, midHip.y, midKnee.y);
     return {
       hipY: midHip.y, kneeFlexion, hipFlexion, torsoLean, stanceWidthRatio,
+      leftKneeFlexion: knee[0], rightKneeFlexion: knee[1], leftHipFlexion: hip[0], rightHipFlexion: hip[1],
+      leftHipSagittalAngle: signedHip[0], rightHipSagittalAngle: signedHip[1],
+      leftAnkleDorsiflexion: ankle[0], rightAnkleDorsiflexion: ankle[1],
+      ankleDorsiflexion: ankle.every(Number.isFinite) ? (ankle[0] + ankle[1]) / 2 : null,
       ...depth, squatDepth: depth.depthCategory, // Preserve the existing metrics alias.
       angleSource: useWorld ? 'world-3d' : 'image-3d-estimate'
     };
@@ -252,7 +268,7 @@ export class GestureClassifier {
           this._metrics.verticalDisplacement = Math.max(0, b.baselineHipY - this._jump.peakY);
         } else {
           this.state = GestureState.DUCKING;
-          this._duck = { deepestY: hipY, pauseDepth: hipY, pauseStart: null, pauseTotal: 0 };
+          this._duck = { startedAt: this._candidate.since, deepestY: hipY, pauseDepth: hipY, pauseStart: null, pauseTotal: 0 };
           this._metrics.pauseDuration = 0;
         }
         this._candidate = null;

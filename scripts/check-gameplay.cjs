@@ -349,6 +349,21 @@ mkdirSync(OUTPUT, { recursive: true });
       if (window.game.scene.getScene('GameScene').runState !== 'PAUSED') throw Error('Occlusion did not pause gameplay');
     });
     console.log('PASS: real analytics DOM clears unreliable lower-body metrics and pauses gameplay');
+    for (const id of ['knee-bilateral', 'hip-bilateral', 'ankle-bilateral']) {
+      assert.equal(await page.locator('#' + id).textContent(), '— / —');
+    }
+    await page.locator('#hardware-notes').fill('Automated integration fixture; no physical webcam');
+    const downloaded = page.waitForEvent('download');
+    await page.getByRole('button', { name: 'Export session JSON', exact: true }).click();
+    const reportStream = await (await downloaded).createReadStream();
+    let reportText = '';
+    for await (const chunk of reportStream) reportText += chunk.toString();
+    const report = JSON.parse(reportText);
+    assert.match(report.performance.hardware.hardwareNotes, /integration fixture/);
+    assert.equal(report.performance.actions.JUMP, 1);
+    assert.equal(report.movement.activeAction, null); // Occlusion cancelled the unfinished jump.
+    assert.equal(report.movement.conventions.ankle.startsWith('positive dorsiflexion'), true);
+    console.log('PASS: unavailable bilateral angles and a real session JSON download with timing metadata');
     await page.getByRole('button', { name: 'Reset sample', exact: true }).click();
     assert.equal(await page.evaluate(() => window.performanceMonitor.getSummary().processedFrames), 0);
     await page.evaluate(() => window.poseTracker.onStreamStateChange({ active: false }));

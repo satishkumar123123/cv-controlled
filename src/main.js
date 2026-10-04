@@ -4,6 +4,9 @@ import { GameScene } from './game/GameScene.js';
 import { PoseTracker } from './vision/PoseTracker.js';
 import { GestureClassifier } from './vision/GestureClassifier.js';
 import { PerformanceMonitor } from './analytics/PerformanceMonitor.js';
+import { ActionRecorder } from './analytics/ActionRecorder.js';
+import { createActionAnalytics } from './ui/ActionAnalytics.js';
+import { createSessionReport, downloadSessionReport } from './analytics/SessionReport.js';
 
 const config = {
   type: Phaser.AUTO,
@@ -79,6 +82,9 @@ const metricFields = [
 const squatDepth = document.querySelector('#squat-depth');
 const hipsAtKneeLevel = document.getElementById('hips-at-knee-level');
 const performanceMonitor = new PerformanceMonitor();
+const actionRecorder = new ActionRecorder();
+const actionAnalytics = createActionAnalytics(panel, actionRecorder);
+window.actionRecorder = actionRecorder;
 window.performanceMonitor = performanceMonitor;
 const performanceHUD = document.createElement('section');
 performanceHUD.id = 'performance-hud';
@@ -109,6 +115,18 @@ const resetPerformanceButton = document.createElement('button');
 resetPerformanceButton.type = 'button';
 resetPerformanceButton.textContent = 'Reset sample';
 performanceHUD.append(logPerformanceButton, resetPerformanceButton);
+const hardwareNotes = document.createElement('input');
+hardwareNotes.id = 'hardware-notes';
+hardwareNotes.type = 'text';
+hardwareNotes.maxLength = 1000;
+hardwareNotes.placeholder = 'CPU / GPU / RAM / OS / webcam / participant code';
+hardwareNotes.setAttribute('aria-label', 'Hardware and test session notes');
+const exportButton = document.createElement('button');
+exportButton.type = 'button';
+exportButton.textContent = 'Export session JSON';
+const exportSession = () => downloadSessionReport(createSessionReport(performanceMonitor, actionRecorder, hardwareNotes.value ?? ''));
+exportButton.addEventListener('click', exportSession);
+performanceHUD.append(hardwareNotes, exportButton);
 panel.append(performanceHUD);
 
 function renderPerformance() {
@@ -121,7 +139,7 @@ function renderPerformance() {
     : metrics.captureSource === 'camera-capture' ? 'Camera capture → game state. Last action only.'
       : 'Browser frame → game state estimate; sensor delay unavailable.';
 }
-const logPerformance = () => performanceMonitor.logSummary();
+const logPerformance = () => performanceMonitor.logSummary(hardwareNotes.value ?? '');
 const resetPerformance = () => { performanceMonitor.reset(); renderPerformance(); };
 logPerformanceButton.addEventListener('click', logPerformance);
 resetPerformanceButton.addEventListener('click', resetPerformance);
@@ -148,6 +166,8 @@ const classifier = new GestureClassifier({
     game.events.emit('gesture:action', action);
   },
   onMetricsUpdate(metrics) {
+    actionRecorder.update(metrics);
+    actionAnalytics.render(metrics);
     state.textContent = metrics.valid
       ? `${metrics.state}${metrics.state === 'NEUTRAL' && !metrics.armed ? ' — stand still to rearm' : ''}`
       : visionStatus === 'Tracking — calibrated' ? metrics.reason ?? 'Waiting for valid pose' : visionStatus;
@@ -175,6 +195,7 @@ window.gestureClassifier = classifier;
 let starting = false;
 let disposed = false;
 const tracker = new PoseTracker(video, canvas, {
+  assetBaseUrl: '/pose', // Prepared from the pinned npm package; works offline after install.
   onFrameMetrics(frame) { performanceMonitor.recordInference(frame); },
   onStreamStateChange({ active, settings }) {
     streamActive = active;
@@ -278,6 +299,8 @@ if (import.meta.hot) {
     clearInterval(performanceTimer);
     logPerformanceButton.removeEventListener('click', logPerformance);
     resetPerformanceButton.removeEventListener('click', resetPerformance);
+    exportButton.removeEventListener('click', exportSession);
+    actionAnalytics.destroy();
     void tracker.stop();
     classifier.reset();
     for (const row of addedMetricRows) row.remove();
@@ -288,5 +311,6 @@ if (import.meta.hot) {
     if (window.poseTracker === tracker) delete window.poseTracker;
     if (window.gestureClassifier === classifier) delete window.gestureClassifier;
     if (window.performanceMonitor === performanceMonitor) delete window.performanceMonitor;
+    if (window.actionRecorder === actionRecorder) delete window.actionRecorder;
   });
 }

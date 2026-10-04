@@ -1,10 +1,50 @@
 import { describe, it, expect } from 'vitest';
 import {
   calculate3DAngle, calculateAngle, calculateKneeFlexion, calculateHipFlexion,
+  calculateAnkleDorsiflexion, calculateHipSagittalAngle,
   calculateTorsoLean, calculateStanceWidthRatio, classifySquatDepth, estimateJumpHeight, midpoint
 } from '../src/analytics/Kinematics.js';
 
 const p = (x, y, z = 0, visibility = 1) => ({ x, y, z, visibility });
+describe('required ankle and signed hip metrics', () => {
+  it.each([-30, 0, 20])('measures ankle %s° with neutral at a perpendicular shin/foot', (angle) => {
+    const rad = angle * Math.PI / 180;
+    const points = [p(0, -1), p(0, 0), p(0, 0), p(0, -Math.sin(rad), -Math.cos(rad))];
+    expect(calculateAnkleDorsiflexion(...points)).toBeCloseTo(angle, 8);
+    const translated = points.map((q) => p(q.x * 4 + 8, q.y * 4 + 3, q.z * 4 - 2));
+    expect(calculateAnkleDorsiflexion(...translated)).toBeCloseTo(angle, 8);
+  });
+  it.each([0, 1, 2, 3])('does not invent an ankle angle when required point %i is unreliable', (index) => {
+    const points = [p(0, -1), p(0, 0), p(0, 0), p(0, 0, -1)];
+    points[index].visibility = 0.649;
+    expect(calculateAnkleDorsiflexion(...points)).toBeNull();
+    points[index] = null;
+    expect(calculateAnkleDorsiflexion(...points)).toBeNull();
+  });
+  it('rejects coincident ankle segments and overflowing coordinates', () => {
+    expect(calculateAnkleDorsiflexion(p(0, 0), p(0, 0), p(0, 0), p(0, 0, -1))).toBeNull();
+    expect(calculateAnkleDorsiflexion(p(0, -1), p(0, 0), p(0, 0), p(0, 0))).toBeNull();
+    expect(calculateAnkleDorsiflexion(p(Number.MAX_VALUE, 0), p(-Number.MAX_VALUE, 0), p(0, 0), p(1, 0))).toBeNull();
+  });
+  it.each([-25, 0, 60, 90])('distinguishes hip flexion/extension at %s°', (angle) => {
+    const rad = angle * Math.PI / 180;
+    const points = [p(0, -1), p(0, 0), p(0, Math.cos(rad), -Math.sin(rad)), p(1, 0), p(-1, 0)];
+    expect(calculateHipSagittalAngle(...points)).toBeCloseTo(angle, 8);
+    // Rotate the entire subject 90° about image vertical and translate/scale.
+    const rotated = points.map((q) => p(3 + q.z * 2, -2 + q.y * 2, 1 - q.x * 2));
+    expect(calculateHipSagittalAngle(...rotated)).toBeCloseTo(angle, 8);
+  });
+  it('rejects missing confidence and a degenerate sagittal reference frame', () => {
+    const points = [p(0, -1), p(0, 0), p(0, 1), p(1, 0), p(-1, 0)];
+    for (let index = 0; index < points.length; index++) {
+      const copy = structuredClone(points);
+      copy[index].visibility = 0.5;
+      expect(calculateHipSagittalAngle(...copy)).toBeNull();
+    }
+    expect(calculateHipSagittalAngle(p(0, -1), p(0, 0), p(0, 1), p(0, 0), p(0, 0))).toBeNull();
+    expect(calculateHipSagittalAngle(p(1, 0), p(0, 0), p(0, 1), p(1, 0), p(-1, 0))).toBeNull();
+  });
+});
 describe('kinematics with confidence and degeneracy checks', () => {
   it('computes 3D interior angles using depth, with invariance to translation and scale', () => {
     const points = [p(1, 0, 0), p(0, 0, 0), p(0, 0, 1)];
