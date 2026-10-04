@@ -1,8 +1,26 @@
 {
   "name": "cv-endless-runner",
   "version": "0.1.0",
+  "description": "Webcam-controlled Phaser 3 endless runner with calibrated MediaPipe pose gestures, movement analytics and latency profiling.",
   "private": true,
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/satishkumar123123/cv-controlled.git"
+  },
+  "homepage": "https://github.com/satishkumar123123/cv-controlled#readme",
+  "bugs": {
+    "url": "https://github.com/satishkumar123123/cv-controlled/issues"
+  },
+  "keywords": [
+    "computer-vision",
+    "mediapipe",
+    "blazepose",
+    "phaser",
+    "endless-runner",
+    "pose-estimation",
+    "biomechanics"
+  ],
   "scripts": {
     "dev": "vite",
     "build": "vite build",

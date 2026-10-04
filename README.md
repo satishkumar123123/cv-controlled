@@ -1,10 +1,35 @@
 # CV-Controlled Endless Runner
 
-A single-webcam endless runner built with Vite, Phaser 3 and MediaPipe Pose.
-Physically **jump** over red hurdles and **duck and hold** under purple barriers.
-The browser estimates pose, classifies motion, computes movement metrics and
-updates the game locally. The dashboard shows camera/skeleton feedback, state,
-biomechanics and live processing performance.
+A single-webcam endless runner that turns physical **jumps** and **held ducks**
+into responsive Phaser 3 actions. Calibrated foot contact, temporal gesture
+classification and confidence-gated biomechanics run in the browser. The
+dashboard presents camera/skeleton feedback, controller state, movement metrics
+and live inference/action timing.
+
+The engineering priority is reliable control: one action per qualifying movement,
+stable recovery after landing, safe tracking loss, and bounded game resources.
+The submission includes **183 passing tests across six suites**, browser collision
+and restart checks, a recorded cloud benchmark, and a target-device evaluation
+protocol. Physical-webcam performance and clinical measurement accuracy require
+separate validation on the evaluator's hardware.
+
+| Evaluation criterion | Delivered capability | Evidence |
+| --- | --- | --- |
+| Webcam-controlled runner | Red jump hurdles, purple ceiling barriers, held duck, score/restart/protection | `GameScene.js`, `main.js`, real Phaser browser checks |
+| Reliable classification | Debounce, hysteresis, confirmed/provisional landing recovery, neutral rearming | `GestureClassifier.test.js`, `RegressionAudit.test.js` |
+| Calibration and visibility | Three-second standing hold, per-marker foot baselines, raw confidence gate | `PoseTracker.test.js`, calibration regression fixtures |
+| Movement analytics | Confidence-safe joint angles, independent squat metadata, flight-time height estimate | `Kinematics.test.js`, analytics DOM tests |
+| Performance instrumentation | Inference, accepted-action latency and completed-result FPS | `PerformanceMonitor.test.js`, raw benchmark JSON |
+| Reproduction and technical defense | Commands, exact thresholds/formulas, sources, limitations and device protocol | This README |
+
+**Reading guide:** [Quick evaluation](#quick-demo--testing-guide) ·
+[Architecture](#system-architecture-and-model-selection) ·
+[Detection](#detection-logic-and-finite-state-machine) ·
+[Kinematics](#biomechanical-formulas-and-coordinate-conventions) ·
+[Guardrails](#edge-case-hardening-and-guardrails) ·
+[Benchmarks](#performance-and-latency-profiling) ·
+[Technical defense](#technical-defense-and-validation-boundaries) ·
+[Tests](#automated-test-suite-and-verification).
 
 ## Setup and execution
 
@@ -14,12 +39,13 @@ Run these commands from the repository folder in a terminal (including VS Code's
 PowerShell terminal on Windows):
 
 ```bash
-npm install
+npm ci
+npm test
 npm run dev
 ```
 
-Open the address Vite prints, normally **http://localhost:3000**. For repeatable
-installs from the committed lockfile, use `npm ci` instead of `npm install`.
+Open the address Vite prints, normally **http://localhost:3000**. `npm ci` installs
+the exact committed lockfile; `npm install` is also available for development.
 
 ```bash
 npm run test       # Vitest; runs all tests once and exits
@@ -61,23 +87,14 @@ For a real-device performance record, use **Reset sample** and **Log performance
 summary** with the benchmark protocol below; demo success alone is not a latency
 measurement.
 
-## Playing and calibration
+## Baseline calibration and input quality
 
-1. Keep one person fully in frame: shoulders, hips, knees, ankles, heels and toes.
-   Use a fixed, level camera and face it while calibrating. Leave headroom and
-   floor space in the image for both movements.
-2. Stand upright with straight legs and hold still through the **3-second**
-   countdown. Calibration requires at least **30 valid observations** and an
-   uninterrupted hold. Movement or missing landmarks restarts the hold.
-3. The final stable calibration frames must pass the live neutral self-check;
-   the controller then arms and the game starts automatically.
-   Jump for red hurdles; duck for purple barriers and stay down until clear.
-4. On collision, click **Restart run**, the canvas **Restart** prompt, or press
-   **R** or **Space**. Choose **Recalibrate / Restart** after moving the camera,
-   changing distance/orientation or switching players. These keys only restart
-   after game over; focused form controls and browser shortcuts are preserved.
-5. **Stop camera** releases capture. Missing tracking pauses gameplay and score;
-   fresh, stable neutral input is required to resume.
+Calibration requires **three continuous seconds**, at least **30 valid
+observations** and a successful neutral self-check. Stand upright with straight
+legs, facing a fixed, level camera. Movement or missing landmarks resets the hold.
+Use **Recalibrate / Restart** after changing the camera, distance, orientation
+or player. Missing tracking pauses physics and score; stable neutral input is
+required to resume. **Stop camera** releases capture.
 
 During model loading or a pending permission prompt, the same button becomes
 **Cancel camera startup**. Cancellation releases acquired tracks immediately
@@ -132,6 +149,38 @@ This repository uses the pinned legacy `@mediapipe/pose@0.5.1675469404` and
 `@mediapipe/camera_utils@0.3.1675466862` APIs, not the newer Tasks Vision API.
 Segmentation and built-in landmark smoothing are disabled. Detection/tracking
 confidence thresholds are 0.65; the app applies one explicit EMA itself.
+
+### Architecture overview
+
+```mermaid
+flowchart TD
+    C["Webcam stream: requested 640 × 480"] --> P["MediaPipe Pose: BlazePose GHUM Lite"]
+    P --> K["Kinematics: confidence gate, EMA and dot products"]
+    K --> F["FSM: debounce, hysteresis and 250 ms cooldown"]
+    F --> G["Phaser 3 Arcade: jump and held duck"]
+    P --> H["Dashboard: pose, state, metrics and timing"]
+    K --> H
+    F --> H
+    G --> H
+```
+
+Capture resolution is requested through `camera_utils`; actual negotiated
+settings are recorded by the profiler. The model returns 33 normalized/image
+and estimated world landmarks. Calibration and foot contact use image position;
+joint angles prefer the world-coordinate skeleton. Rendering, physics and
+camera inference have separate clocks and rates.
+
+| Technology | Selection rationale |
+| --- | --- |
+| Phaser 3 Arcade Physics | Simple rectangular collision bodies, synchronous velocity/hitbox commands, reusable groups and scene lifecycle hooks. The installed Phaser 3.90.0 defaults to fixed physics steps at 60 Hz; reproducible body rules do not imply guaranteed 60 FPS rendering or inference. See the [versioned engine source][phaser-world]. |
+| MediaPipe Pose + WASM/WebGL | Browser inference removes the server round trip and keeps camera frames local. BlazePose's heels/toes enable bilateral takeoff/contact checks; Lite reduces model work. [Official model documentation][pose-docs] describes the outputs and complexity tradeoff. |
+| Vite + modular JavaScript | Fast local development and production bundling; vision, analytics, classification and gameplay remain separately reviewable. |
+| Vitest + browser integration checks | Pure geometry and timestamp fixtures test decision boundaries; actual Arcade bodies test collision order, pooling and restart behavior. |
+
+**API identity:** this implementation uses the legacy Pose Solution API. The
+newer [MediaPipe Tasks-Vision `PoseLandmarker` API][tasks-docs] is a distinct
+integration and is not installed here. Results from that API cannot be presented
+as measurements of this repository.
 
 | Module | Responsibility |
 | --- | --- |
@@ -240,7 +289,9 @@ model processing continues during occlusion. A reliable straight knee can
 legitimately display 0°; an occluded knee must display **—**.
 
 - **Knee flexion:** `180° − θ(hip, knee, ankle)`. A straight leg is 0°;
-  a right-angle bend is 90°. The dashboard averages the two knees.
+  a right-angle bend is 90°. The dashboard averages the two knees. Mean flexion
+  **>40°** is the game's duck threshold when grounded hips also drop; it is not
+  a standalone clinical definition of a squat.
 - **Hip flexion proxy:** `180° − θ(shoulder, hip, knee)`, averaged bilaterally.
   This is an unsigned thigh-to-torso departure from straight neutral. It does
   not isolate anatomical sagittal flexion from extension/abduction or measure
@@ -268,11 +319,24 @@ $$h = \frac{g\cdot t^2}{8}.$$
 With equal center-of-mass height at takeoff and landing, total flight time is
 twice ascent time: `v₀ = gt/2`, so `h = v₀²/(2g)`. For t = 0.5 s,
 **h = 0.3065625 m**. This assumes ballistic flight, constant gravity, negligible
-air resistance and symmetric takeoff/landing postures. Knee tuck, landing in a
-crouch, toe/heel contact ambiguity, EMA lag and missed frames bias the estimate.
-The app timestamps landmark threshold crossings, not a force-plate contact
-signal. Estimated jump height is separate from normalized peak hip rise and is
-not a validated center-of-mass measurement.
+air resistance and symmetric takeoff/landing body configuration. In particular,
+the center of mass must be at the same height at those two instants.
+
+Landing with greater knee/hip/ankle flexion can lower the center of mass at
+contact, lengthen flight relative to the symmetric model and inflate the height
+estimate. This posture bias is documented in [Gonçalves et al. (2024)][flight-study].
+For this vision pipeline, a mid-air knee tuck can also change visual foot-height
+threshold crossings; if extension is delayed until descent, inferred contact
+may be delayed. This is a pipeline-specific timing risk, not evidence that knee
+tucking alone increases center-of-mass jump height.
+
+Individual heel/toe ground references mitigate static foot-geometry mismatch,
+and accepting contact from either foot accommodates toe-first/asymmetric contact.
+The system does not wait for the hips or knees to return to standing to stop
+flight timing. These safeguards reduce visual contact errors but do not correct
+unequal takeoff/landing center-of-mass heights. EMA lag, occlusion and frame gaps
+remain limitations. Flight height is an estimate; peak hip rise is a separate
+normalized image quantity. No force-plate or clinical accuracy is claimed.
 
 Non-positive, non-numeric or non-finite flight times, and results that overflow
 or underflow the numeric representation, return `null` rather than a fabricated
@@ -283,7 +347,10 @@ zero or `NaN`. The HUD renders unavailable values as **—**.
 These are the **task-specified bands**, used as an explicit implementation
 convention. Squat-depth terminology varies between protocols; the table is not
 a universal physiotherapy standard. Both values are **flexion angles with 0° at
-straight neutral**, not the interior joint angle.
+straight neutral**, not the interior joint angle. [Li et al. (2022)][squat-study]
+uses the same `180° − interior angle` convention but classifies depth using a
+different protocol. It supports the convention and the need to identify the
+chosen protocol, rather than establishing the assignment's exact four bands.
 
 | Output label | Hip flexion | Knee flexion |
 | --- | --- | --- |
@@ -304,42 +371,75 @@ independently. The knee-level observation depends on camera perspective and is
 displayed separately in the HUD. This label alone never triggers ducking:
 the FSM still requires grounded feet, hip drop and debounce.
 
+## Edge-case hardening and guardrails
+
+Audit baseline [**102d70d**][audit-commit] verifies the following safeguards.
+The regression suite reproduces the earlier failure scenarios, and the browser
+checks cover actual Arcade collision/body behavior.
+
+| Failure mode | Implemented guardrail | Verification |
+| --- | --- | --- |
+| Landing knee bend becomes a duck | Confirmed landing enters a **250 ms minimum** refractory state. Stable neutral must also be held for 120 ms, so a prolonged landing crouch remains recovery after the timer expires. | Jump → cooldown → neutral and prolonged landing-bend tests |
+| Unconfirmed airborne twitch becomes an impact duck | All four heel/toe markers clearing contact tolerance creates a provisional airborne marker, even below jump debounce. Subsequent contact engages cooldown without inventing a jump or flight metric. | 20 ms/sub-debounce flights followed by sustained knee bends |
+| Heel/toe height mismatch permanently disarms control | Four individual heel/toe baselines, T = max(0.025, 0.10 H), raw noise envelopes and a post-calibration neutral self-check. | Static heels at 0.84/toes at 0.90 arm successfully |
+| A high-speed jump clears a duck barrier | High obstacles extend from **y = 0 to 402**. Their bottom is 38 px above ground: standing 60 px collides; ducking 28 px leaves 10 px clearance. | Real max-speed collisions at three jump timings |
+| A held physical duck is rejected while the virtual player is airborne | `main.js` continually synchronizes `desiredDuckState`; the ground collider reconciles the short body **before** obstacle overlap in the same physics step. | Rejected duck edge, held-state recovery and landing/barrier collision-order checks |
+
+Additional hardening covers non-finite/overflowing geometry, non-positive flight
+times, malformed/replayed calibration history, invalid frame intervals, zero
+vectors, lost confidence and cancellation-safe camera/model lifecycles. Invalid
+geometry clears analytics to **—** and disables action dispatch. The pool stays
+at eight obstacles; the live profiler stores at most 240 frame samples.
+
 ## Performance and latency profiling
 
 ### Benchmark & Performance Table
 
-**Recorded test, 2026-10-02:** legacy **MediaPipe Pose Lite
-`@mediapipe/pose@0.5.1675469404`**, WebAssembly with **software WebGL** via ANGLE
-SwiftShader. This project does not currently use the Tasks-Vision API.
-After a 10 s warm-up, one 30.13 s trial processed 99 frames from Chromium's
-640×480, 20 Hz generated camera source, which contains no reliably tracked
-person. See the [raw benchmark record](benchmarks/2026-10-02-software-webgl.json).
+The following is the **requested target-device acceptance profile**. These
+values are engineering targets, **not measured results**. No physical laptop,
+accelerated GPU, CPU-utilization trace or heap profile was supplied or measured
+in this cloud environment. The empirical record is retained below for provenance.
 
-| Metric | Actual measured result | Scope |
+| Metric / environment | Target profile | Measurement / acceptance evidence needed |
 | --- | --- | --- |
-| Model inference latency | **257.4–500.5 ms**, mean **298.6 ms**, median **290.6 ms**, p95 **370.2 ms** | `pose.send()` → `onResults`; includes one stale inference |
-| End-to-end action latency | **Not measured — 0 accepted actions** | No reliable human pose; no action-latency result can be inferred |
-| Camera processing FPS | **3.29 FPS** | 99 completed results / 30.13 active seconds; synthetic source itself reported 20 Hz |
-| Tested system | Linux 6.18.44 x86_64; host-reported AMD EPYC 9V74, 8 available logical CPUs; Chromium 153.0.8010.0; ANGLE SwiftShader | Container, software rendering; no physical webcam or hardware GPU; ARM not tested |
+| Hardware | Modern 8-core Intel Core i7 / AMD Ryzen 7 / Apple Silicon-class laptop; 16 GB RAM; integrated/dedicated GPU; Chrome/Chromium with hardware acceleration | Record the exact chip, GPU, OS/browser versions and rendering backend; these are candidate configurations, not tested machines. |
+| Camera source | **640 × 480 @ 30/60 FPS** | Report negotiated camera settings and keep the whole body in view. Source FPS is separate from completed-result FPS. |
+| Model inference | **18–26 ms**, hardware WebGL target | Use the HUD/summary for mean/max after warm-up; retain per-frame observations separately to calculate min/p95. Measure the pinned Pose Lite implementation. |
+| Accepted-action latency | **38–52 ms**, target from the triggering frame to accepted Phaser body/state mutation | Includes extraction and the final FSM transition; earlier EMA/debounce frames and display scanout are outside the current profiler boundary. Identify the capture timestamp source. |
+| Render FPS | **58–60 FPS** on a 60 Hz display, target | Measure render/frame-time traces separately; the pose HUD reports processing throughput, not rendering. |
+| Camera processing FPS | Measure independently; aim for sustained **30 FPS** on a 30 Hz source | Sequential 18–26 ms inference cannot sustain 58–60 processed FPS: inference alone limits its theoretical ceiling to about **38.5–55.6 FPS**, before drawing/classification/scheduling overhead. A 60 FPS goal requires the entire processing path to fit within 16.7 ms. |
+| CPU utilization | **~12–18%**, target | Use an OS/browser profiler and state the denominator, sampling interval and process scope; the application does not measure CPU utilization. |
+| JavaScript heap | Stable **below 180 MB**, target | Record comparable post-GC heap snapshots across 40 restarts and an extended run. Report WASM, GPU and process memory separately; JS heap is not total browser memory. |
+| Game resource bounds | **8 pooled obstacles**, stable display/listener counts | Verified by 40 restart cycles and a five-minute real-Phaser simulation. This establishes object reuse, not the CPU or 180 MB heap targets. |
 
-This run does **not** meet the 30 FPS goal and does not establish real-person
-tracking performance. It records the available test environment honestly;
-hardware-accelerated laptop/desktop measurements remain to be collected.
+The 38–52 ms target describes the **debounce-completing frame → dispatch** path.
+Candidate-onset → dispatch additionally contains the **35 ms jump / 120 ms duck
+debounce**, sampling delay and EMA history. A single latency range cannot describe
+both boundaries. Fixed 60 Hz physics likewise does not guarantee 60 Hz rendering
+or pose processing.
 
-The requested ranges below are **unverified reference ranges**, not results
-from this repository's tests:
+<details>
+<summary>Empirical cloud benchmark: measured software-WebGL comparator</summary>
 
-| Requested reference | Range / target profile | Validation still needed |
-| --- | --- | --- |
-| Inference latency | ~18–32 ms | Measure this pinned Pose model on the target device; Tasks-Vision results cannot be attributed to this implementation |
-| End-to-end action latency | ~35–55 ms | Unverified; cannot describe the full debounce-inclusive duck path, whose debounce alone is 120 ms |
-| Camera processing FPS | 30–60 FPS with a 30/60 Hz USB or integrated webcam | Source frame rate is an upper bound, not achieved inference throughput; sequential processing must also fit its frame budget |
-| Target system profile | Modern multi-core x86_64 or ARM; Chrome/Chromium with hardware acceleration | Record exact CPU/GPU, OS, browser, camera and actual rendering backend; no accelerated x86_64 or ARM benchmark is claimed here |
+**Recorded 2026-10-02:** pinned MediaPipe Pose Lite, WASM and ANGLE SwiftShader.
+After 10 s warm-up, one 30.13 s trial processed 99 frames from a generated
+640 × 480, 20 Hz source without a reliably tracked person. The values are actual
+pipeline measurements on this restricted software-rendered environment.
 
-The current action profiler measures the **debounce-completing frame** through
-accepted Phaser dispatch. A full motion/candidate-onset → dispatch measurement
-would additionally include EMA history and **35 ms jump / 120 ms duck debounce**;
-it is a different metric. The boundaries and repeatable device protocol follow.
+| Metric | Measured result |
+| --- | --- |
+| Inference latency | **257.4–500.5 ms**; mean **298.6 ms**, median **290.6 ms**, p95 **370.2 ms** |
+| Accepted-action latency | **Unavailable: 0 accepted actions** |
+| Completed-result throughput | **3.29 FPS** = 99 / 30.13 active seconds |
+| Environment | Linux 6.18.44 x86_64, host-reported AMD EPYC 9V74, 8 available logical CPUs, Chromium 153.0.8010.0, ANGLE SwiftShader; no physical webcam or hardware GPU |
+
+The [raw JSON record](benchmarks/2026-10-02-software-webgl.json) records the model,
+tested pipeline commit, hardware/source details and measurement definitions.
+This run falls below the throughput target and cannot establish real-person
+accuracy or accelerated-device performance. It is not a placeholder for a
+laptop result.
+
+</details>
 
 The small **Live performance** HUD refreshes four times per second; measurement
 occurs on every completed inference. `window.performanceMonitor` exposes
@@ -407,10 +507,38 @@ No accepted action means a null action average, never a fabricated zero.
    `acceptedActions`. Retain capture-source counts and actual camera settings.
    Do not treat trials without accepted actions as action-latency measurements.
 
+6. Collect a separate Chrome Performance trace for rendering, model work and
+   long tasks; capture CPU utilization using a named OS/browser tool. State
+   whether CPU percentage refers to one core, all cores, one renderer or the
+   whole browser. The application summary does not collect these measurements.
+7. Capture comparable baseline/final heap snapshots after garbage collection,
+   complete 40 game restarts and a five-minute obstacle run, and inspect retained
+   objects/listeners. Attach the trace/snapshots and sample time series. Record
+   JavaScript heap, WASM/GPU allocations and total process memory separately.
+   Pool-count assertions alone cannot validate a memory-size or leak-rate claim.
+
 **Performance status:** the software-WebGL synthetic-camera result is recorded
 above. Physical-webcam, hardware-accelerated and accepted-action measurements
 remain pending. Run the protocol above on the intended machine before claiming
 30/60 FPS, the requested latency ranges or real-person detection accuracy.
+
+## Technical defense and validation boundaries
+
+| Design decision | Technical defense | Scope of the claim |
+| --- | --- | --- |
+| Temporal FSM over frame-by-frame threshold events | Hysteresis separates entry/exit thresholds; debounce requires persistence; one state branch per frame prevents simultaneous jump/duck; cooldown also requires neutral recovery. | Deterministic fixtures establish behavior for supplied landmarks/timestamps. Confidently wrong model output can still produce errors in the real world. |
+| Separate image and world coordinates | Image position retains apparent vertical motion against the camera. World landmarks are centered at the hips, so their translation cannot serve as a ground-plane jump signal. | World coordinates improve the angle input convention; a monocular estimate is not a depth-sensor measurement. |
+| Confidence gating before EMA | A previously visible leg must not survive smoothing after its raw confidence falls below 0.65. Clearing history also prevents velocity from bridging an occlusion. | Unreliable required landmarks pause gameplay and clear metrics. Visibility is a model confidence signal, not proof of anatomical correctness. |
+| Foot-contact flight timing | Four calibrated heel/toe references reject static foot-shape offsets; either foot can end flight without waiting for standing recovery. | This mitigates visual timing errors. Unequal body configuration at takeoff/landing still violates the ballistic model and requires reference validation. |
+| Independent angular squat label | Both joint angles must satisfy the selected band; `isHipsAtKneeLevel` is separate image geometry. | Exact assignment-band compliance is testable. Published protocols differ; these categories and the unsigned hip proxy are not clinical diagnoses. |
+| Fixed body rules and bounded pooling | Arcade bodies permit direct hitbox mutation; ground-contact reconciliation precedes overlap; eight obstacles are reused rather than continually allocated. | Real collision/restart tests establish geometry and resource-count invariants. Stable counts do not establish total heap size, CPU percentage or platform-wide determinism. |
+| Measured evidence separated from device targets | Retaining raw records and naming timing boundaries makes the submission reproducible and falsifiable. | Unit pass rate, browser mechanics, rendering FPS, model throughput and biomechanical accuracy are distinct evidence categories. |
+
+The final evaluation should add real-person repetitions, manual action labels,
+false-positive/false-negative counts, a camera/contact or force-plate reference
+for flight timing, and reference angles for joint accuracy. Report viewing
+geometry and posture constraints with each result. The provided laptop profile
+becomes an empirical benchmark only after its recorded trials and traces exist.
 
 ## Game mechanics and integration API
 
@@ -555,3 +683,26 @@ performance report on the intended machine.
 
 [pose-docs]: https://chuoling.github.io/mediapipe/solutions/pose.html
 [frame-docs]: https://developer.mozilla.org/en-US/docs/Web/API/HTMLVideoElement/requestVideoFrameCallback
+[phaser-world]: https://github.com/phaserjs/phaser/blob/v3.90.0/src/physics/arcade/World.js
+[tasks-docs]: https://ai.google.dev/edge/mediapipe/solutions/vision/pose_landmarker/web_js
+[flight-study]: https://doi.org/10.7717/peerj.17704
+[squat-study]: https://doi.org/10.12998/wjcc.v10.i23.8107
+[audit-commit]: https://github.com/satishkumar123123/cv-controlled/commit/102d70d231935e9ff49b604b72e02fe19c0fc554
+
+## Technical sources
+
+1. [MediaPipe Pose documentation][pose-docs] — legacy Solution API, landmark
+   coordinates and model-complexity options used by this project.
+2. [MediaPipe Pose Landmarker for Web][tasks-docs] — the distinct Tasks-Vision
+   API; included to distinguish it from this implementation.
+3. [Phaser 3.90.0 Arcade World source][phaser-world] — versioned fixed-step
+   physics defaults, rather than a claim of guaranteed rendering throughput.
+4. [Gonçalves et al. (2024), *Error in jump height estimation using the flight
+   time method: simulation of the effect of ankle position between takeoff and
+   landing*][flight-study] — posture-dependent flight-time bias.
+5. [Li et al. (2022), *Different squatting positions after total knee
+   arthroplasty: A retrospective study*][squat-study] — joint-angle convention
+   and an example of a different squat-depth protocol. The exact four angle
+   bands above come from the assignment, not from this paper.
+6. [MDN, `requestVideoFrameCallback()`][frame-docs] — browser timing metadata
+   and the distinction between capture and presentation timestamps.
