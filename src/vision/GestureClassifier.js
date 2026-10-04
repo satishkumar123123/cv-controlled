@@ -32,6 +32,7 @@ const emptyMetrics = () => ({
 const FOOT_KEYS = Object.values(FOOT_BASELINES);
 const baselineValid = (b) => b && ['baselineHipY', 'baselineFootY', 'torsoHeight', 'shoulderWidth']
   .every((key) => Number.isFinite(b[key])) && b.torsoHeight > 1e-6 && b.shoulderWidth > 1e-6 &&
+  b.torsoHeight <= Math.SQRT2 && b.shoulderWidth <= Math.SQRT2 &&
   b.baselineHipY >= 0 && b.baselineHipY <= 1 && b.baselineFootY >= 0 && b.baselineFootY <= 1 &&
   // Legacy four-metric callers remain supported; partial new calibration is unsafe.
   (FOOT_KEYS.every((key) => b[key] === undefined) ||
@@ -95,9 +96,14 @@ export class GestureClassifier {
   /** Reuse the verified final calibration hold, without dispatching old actions. */
   completeCalibration(baseline, samples = []) {
     this.reset(baseline);
-    if (!this.baseline || !samples.length) return this.metrics;
+    if (!this.baseline || !Array.isArray(samples) || !samples.length) return this.metrics;
     const check = new GestureClassifier({ thresholds: this.config });
-    for (const { landmarks, frame } of samples) {
+    let previousTimestamp = -Infinity;
+    for (const sample of samples) {
+      const { landmarks, frame } = sample ?? {};
+      // A malformed/replayed hold must neither throw nor reuse an armed result.
+      if (!frame || !Number.isFinite(frame.timestamp) || frame.timestamp < 0 || frame.timestamp <= previousTimestamp) return this.metrics;
+      previousTimestamp = frame.timestamp;
       const metrics = check.update(landmarks, baseline, frame.timestamp, frame);
       if (!metrics.valid || !metrics.neutral || metrics.state !== GestureState.NEUTRAL) return this.metrics;
     }
@@ -139,7 +145,7 @@ export class GestureClassifier {
     // using a 3D dot product. Prefer actual model world coordinates when valid.
     const world = context.worldLandmarks;
     const useWorld = world != null;
-    if (useWorld && !JOINTS.every((index) => isVisibleLandmark(world[index]))) return null;
+    if (useWorld && (!Array.isArray(world) || !JOINTS.every((index) => isVisibleLandmark(world[index])))) return null;
     const joints = useWorld ? world : points.map((p) => p && ({ ...p, x: p.x * aspect, z: p.z * aspect }));
     const knee = [calculateKneeFlexion(joints[23], joints[25], joints[27]), calculateKneeFlexion(joints[24], joints[26], joints[28])];
     const hip = [calculateHipFlexion(joints[11], joints[23], joints[25]), calculateHipFlexion(joints[12], joints[24], joints[26])];
@@ -162,26 +168,27 @@ export class GestureClassifier {
   }
 
   update(points, baseline, timestamp = performance.now(), context = {}) {
-    if (!Number.isFinite(timestamp)) return this.invalidate('Invalid frame timestamp');
+    if (!Number.isFinite(timestamp) || timestamp < 0) return this.invalidate('Invalid frame timestamp');
     if (!baselineValid(baseline)) { this.reset(); return this.metrics; }
     if (signature(baseline) !== this._baselineSignature) this.reset(baseline);
     // Ignore duplicate/out-of-order frames; never calculate a negative dt.
     if (this._lastTimestamp !== null && timestamp <= this._lastTimestamp) return this.metrics;
     const previousTimestamp = this._lastTimestamp;
     this._lastTimestamp = timestamp;
-    if (!points || !REQUIRED.every((index) => isVisibleLandmark(points[index], 2) &&
+    if (!Array.isArray(points) || !REQUIRED.every((index) => isVisibleLandmark(points[index], 2) &&
         points[index].x >= 0 && points[index].x <= 1 && points[index].y >= 0 && points[index].y <= 1)) {
       return this.invalidate('Required landmarks are missing or below 0.65 visibility');
     }
     if (previousTimestamp !== null && timestamp - previousTimestamp > this.config.maxFrameGapMs) {
       this.invalidate('Frame gap — motion history discarded');
     }
-    const pose = this._poseMetrics(points, context);
+    const pose = this._poseMetrics(points, context ?? {});
     if (!pose) return this.invalidate('Joint geometry is unavailable');
     const c = this.config, b = this.baseline;
     const dt = this._previous ? timestamp - this._previous.time : 0;
     if (dt > 0) {
       const velocity = (this._previous.hipY - pose.hipY) / (dt / 1000) / b.torsoHeight;
+      if (!Number.isFinite(velocity)) return this.invalidate('Invalid frame interval — motion history discarded');
       const alpha = 1 - Math.exp(-dt / c.velocityTimeConstantMs);
       this._upVelocity += alpha * (velocity - this._upVelocity);
     }

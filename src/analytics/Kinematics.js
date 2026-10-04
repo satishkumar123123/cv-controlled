@@ -5,14 +5,16 @@ const clamp = (value) => Math.max(-1, Math.min(1, value));
 
 /** Missing confidence is unknown, not implicitly visible. */
 export function isVisibleLandmark(point, dimensions = 3) {
-  return point != null && Number.isFinite(point.visibility) && point.visibility >= MIN_VISIBILITY &&
+  return [2, 3].includes(dimensions) && point != null && Number.isFinite(point.visibility) &&
+    point.visibility >= MIN_VISIBILITY && point.visibility <= 1 &&
     ['x', 'y', ...(dimensions === 3 ? ['z'] : [])].every((axis) => Number.isFinite(point[axis]));
 }
 
 export function midpoint(a, b, dimensions = 3) {
   if (![a, b].every((point) => isVisibleLandmark(point, dimensions))) return null;
-  const result = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, visibility: Math.min(a.visibility, b.visibility) };
-  if (dimensions === 3) result.z = (a.z + b.z) / 2;
+  // Halve before adding: two finite coordinates can otherwise overflow.
+  const result = { x: a.x / 2 + b.x / 2, y: a.y / 2 + b.y / 2, visibility: Math.min(a.visibility, b.visibility) };
+  if (dimensions === 3) result.z = a.z / 2 + b.z / 2;
   return result;
 }
 
@@ -22,7 +24,7 @@ function interiorAngle(a, b, c, dimensions) {
   const u = axes.map((axis) => a[axis] - b[axis]);
   const v = axes.map((axis) => c[axis] - b[axis]);
   const uLength = Math.hypot(...u), vLength = Math.hypot(...v);
-  if (uLength < EPSILON || vLength < EPSILON) return null;
+  if (![uLength, vLength].every(Number.isFinite) || uLength < EPSILON || vLength < EPSILON) return null;
   // Normalize before dotting to avoid overflowing a product of lengths.
   const cosine = u.reduce((sum, value, index) => sum + (value / uLength) * (v[index] / vLength), 0);
   return Number.isFinite(cosine) ? degrees(Math.acos(clamp(cosine))) : null;
@@ -54,14 +56,15 @@ export function calculateTorsoLean(midShoulder, midHip) {
   if (![midShoulder, midHip].every((point) => isVisibleLandmark(point, 2))) return null;
   const dx = midShoulder.x - midHip.x, dy = midShoulder.y - midHip.y;
   const length = Math.hypot(dx, dy);
-  return length < EPSILON ? null : degrees(Math.acos(clamp(-dy / length)));
+  return !Number.isFinite(length) || length < EPSILON ? null : degrees(Math.acos(clamp(-dy / length)));
 }
 
 /** Both ankle XY and shoulderWidth must use the same image coordinate scale. */
 export function calculateStanceWidthRatio(leftAnkle, rightAnkle, shoulderWidth) {
   if (![leftAnkle, rightAnkle].every((point) => isVisibleLandmark(point, 2)) ||
       !Number.isFinite(shoulderWidth) || shoulderWidth <= EPSILON) return null;
-  return Math.hypot(leftAnkle.x - rightAnkle.x, leftAnkle.y - rightAnkle.y) / shoulderWidth;
+  const ratio = Math.hypot(leftAnkle.x - rightAnkle.x, leftAnkle.y - rightAnkle.y) / shoulderWidth;
+  return Number.isFinite(ratio) ? ratio : null;
 }
 
 /**
@@ -74,7 +77,7 @@ export function classifySquatDepth(hipFlexion, kneeFlexion, hipY, kneeY) {
   const result = {
     depthCategory: null,
     isHipsAtKneeLevel: [hipY, kneeY].every((y) => Number.isFinite(y) && y >= 0 && y <= 1)
-      ? Math.abs(hipY - kneeY) <= 0.02 : null
+      ? Math.abs(hipY - kneeY) <= 0.02 + 4 * Number.EPSILON : null
   };
   if (![hipFlexion, kneeFlexion].every(Number.isFinite) ||
       hipFlexion < 0 || hipFlexion > 180 || kneeFlexion < 0 || kneeFlexion > 180) return result;
@@ -89,7 +92,7 @@ export function classifySquatDepth(hipFlexion, kneeFlexion, hipY, kneeY) {
 
 /** Ballistic estimate in meters. Assumes equal COM height at takeoff/landing. */
 export function estimateJumpHeight(flightTimeSeconds) {
-  if (!Number.isFinite(flightTimeSeconds) || flightTimeSeconds < 0) return null;
+  if (!Number.isFinite(flightTimeSeconds) || flightTimeSeconds <= 0) return null;
   const height = 9.81 * flightTimeSeconds ** 2 / 8;
-  return Number.isFinite(height) ? height : null;
+  return Number.isFinite(height) && height > 0 ? height : null;
 }

@@ -10,7 +10,8 @@ export const RUNNER = Object.freeze({
   HIGH_CLEARANCE: 38, STORAGE_KEY: 'cv-runner.highScore.v1'
 });
 export const RunState = Object.freeze({ WAITING: 'WAITING', RUNNING: 'RUNNING', PAUSED: 'PAUSED', GAME_OVER: 'GAME_OVER' });
-export const speedForScore = (score) => Math.min(RUNNER.MAX_SPEED, RUNNER.BASE_SPEED + Math.max(0, score) * RUNNER.SPEED_PER_POINT);
+export const speedForScore = (score) => Math.min(RUNNER.MAX_SPEED, RUNNER.BASE_SPEED +
+  (Number.isFinite(score) ? Math.max(0, score) : 0) * RUNNER.SPEED_PER_POINT);
 // Reserve player width too: this is a clearance-to-next-contact recovery gap,
 // not just a center-to-center gap. It remains safe through speed ramp-up.
 export const minimumObstacleGap = () => RUNNER.MAX_SPEED * RUNNER.MIN_RECOVERY_SECONDS + RUNNER.PLAYER_WIDTH;
@@ -209,7 +210,7 @@ export class GameScene extends Phaser.Scene {
   update(_time, delta) {
     if (this.runState !== RunState.RUNNING) return;
     // Large render stalls must not skip recovery intervals or award idle score.
-    const elapsed = Math.min(Math.max(delta, 0), 50);
+    const elapsed = Number.isFinite(delta) ? Math.min(Math.max(delta, 0), 50) : 0;
     this.runTimeMs += elapsed;
     this.speed = speedForScore(this.score);
     const travel = this.speed * elapsed / 1000;

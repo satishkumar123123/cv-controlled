@@ -79,6 +79,10 @@ measurement.
 5. **Stop camera** releases capture. Missing tracking pauses gameplay and score;
    fresh, stable neutral input is required to resume.
 
+During model loading or a pending permission prompt, the same button becomes
+**Cancel camera startup**. Cancellation releases acquired tracks immediately
+and lets the app return to its start controls without waiting indefinitely.
+
 Calibration averages these filtered **normalized image** quantities over the hold:
 
 | Baseline field | Calculation |
@@ -226,8 +230,8 @@ v = c − b. The interior angle at b is:
 $$\theta(a,b,c)=\frac{180}{\pi}\cos^{-1}\left(
 \operatorname{clamp}\left(\frac{u\cdot v}{\lVert u\rVert\lVert v\rVert},-1,1\right)\right).$$
 
-Zero-length segments, missing/non-finite coordinates and landmarks with
-visibility <0.65 return `null`; the classifier publishes `valid: false` when
+Zero-length segments, missing/non-finite coordinates, overflowing geometry and
+landmarks with visibility outside 0.65–1 return `null`; the classifier publishes `valid: false` when
 required geometry is unavailable. Unknown values display as **—**, not zero.
 Losing any required hip, knee, ankle, heel or toe clears all movement fields,
 including previous flight/jump values, and shows the tracking-loss reason in
@@ -269,6 +273,10 @@ crouch, toe/heel contact ambiguity, EMA lag and missed frames bias the estimate.
 The app timestamps landmark threshold crossings, not a force-plate contact
 signal. Estimated jump height is separate from normalized peak hip rise and is
 not a validated center-of-mass measurement.
+
+Non-positive, non-numeric or non-finite flight times, and results that overflow
+or underflow the numeric representation, return `null` rather than a fabricated
+zero or `NaN`. The HUD renders unavailable values as **—**.
 
 ### Squat reference table
 
@@ -462,6 +470,18 @@ hipFlexion, torsoLean (degrees), stanceWidthRatio and pauseDuration (s).
 registry. `runner:restartRequested` resets motion history. Camera stop/pagehide
 releases capture; hot-module disposal removes timers and listeners.
 
+Each camera run owns a separate session and acquisition video. A cancelled
+permission request that eventually succeeds stops its own tracks and cannot
+overwrite a restarted stream. Frame callbacks, watchdogs, cancellation listeners
+and timeout handles are removed during shutdown. Model initialization and camera
+acquisition are limited to 30 s each, playback to 10 s and inference to 5 s;
+timeouts show a retryable status. Async `stop()` allows at most 1 s for pending
+model work and 1 s for SDK disposal, while detaching camera tracks synchronously.
+A model that finishes initialization after early disposal is closed again.
+Browser permission requests themselves are not abortable; session isolation
+handles their late completion. These bounds cannot preempt JavaScript that
+blocks the browser's main thread.
+
 ## Automated test suite and verification
 
 `npm run test` runs deterministic Vitest tests without a camera or network:
@@ -470,10 +490,10 @@ releases capture; hot-module disposal removes timers and listeners.
 | --- | --- |
 | `tests/Kinematics.test.js` | 3D angles, straight/right-angle flexion, scale/translation invariance, squat boundaries/gaps/precedence, multiple ballistic fixtures including 0.5 s, confidence and degenerate geometry |
 | `tests/GestureClassifier.test.js` | Jump → cooldown → neutral and duck → neutral sequences, landing-bend suppression, no simultaneous jump/duck, debounce, pause, visibility loss, timestamp gaps, world-coordinate selection, 30/60 FPS synthetic sampling |
-| `tests/PoseTracker.test.js` | Stillness calibration, raw visibility gate, EMA, canvas calls, camera failure/retry/cleanup, sequential scheduling, capture timestamp fallbacks and inference timing before consumers |
+| `tests/PoseTracker.test.js` | Stillness calibration, raw visibility gate, EMA, canvas calls, camera failure/retry/cleanup, sequential scheduling, capture timing; hung startup/inference/disposal, bounded cancellation and late-session isolation |
 | `tests/PerformanceMonitor.test.js` | Known clock intervals, processing FPS, action/frame pairing, invalid samples, stale results, pauses, resets, bounded storage and hardware summaries |
-| `tests/main.test.js` | Real classifier wired to mocked Phaser/DOM, command acceptance, HUD metrics, summary/reset controls, and clearing stale values for each of the ten lower-body landmarks below 0.65 visibility |
-| `tests/RegressionAudit.test.js` | Held airborne duck and cancellation, provisional landing bends/cooldown, divergent heel/toe calibration and immediate arming, raw noise/self-check failure, high-barrier ballistic intersection, independent squat category/knee-level flag, restart keyboard guards |
+| `tests/main.test.js` | Real classifier wired to mocked Phaser/DOM, command acceptance, HUD metrics, summary/reset controls, startup cancellation/retry and invalid tracking flags/metrics for every lower-body landmark |
+| `tests/RegressionAudit.test.js` | Held airborne duck, provisional landing cooldown, divergent heel/toe calibration, high-barrier intersection, independent squat metadata; numeric overflow/underflow, exact knee-level boundary, malformed/replayed calibration, invalid frame intervals/deltas |
 
 For actual Phaser/browser integration checks (optional extra tooling):
 
@@ -497,12 +517,20 @@ timings, same-step landing/duck/obstacle ordering, and a short physical jump
 followed by a rejected duck edge through the real classifier/main/Phaser stack.
 These are integration checks, **not webcam/model inference benchmarks**.
 
-Verification on 2026-10-02: **147 Vitest tests passed**, production build passed,
+Verification on 2026-10-04: **183 Vitest tests passed across all six suites**, production build passed,
 and the browser suite passed with no JavaScript errors. Environment: Linux
 6.18.44 x86_64 container, AMD EPYC 9V74 host-reported CPU, 8 available logical
 processors, Node.js 24.19.0, Chromium 153 using software WebGL. No physical
 webcam or target-laptop performance was measured. Vite reports a large main
 bundle warning due to the included Phaser/runtime code; the build completes.
+
+The final audit also exercised the actual pinned MediaPipe runtime with locally
+served installed model/WASM assets and Chromium's generated camera source.
+Inference, three stop/start cleanup cycles, permission-denied/no-camera/busy-camera
+fallbacks and successful retry passed without unhandled errors. Both development
+and production-preview pages had all required DOM bindings and one game canvas.
+This checks runtime integration with a synthetic camera; it does not establish
+real-person accuracy, hardware-accelerated performance or CDN availability.
 
 ## Failure modes and limitations
 

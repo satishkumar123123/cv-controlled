@@ -1,11 +1,12 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 
-const sdk = vi.hoisted(() => ({ poses: [], cameras: [], startError: null, initGate: null, sendGate: null, stream: null }));
+const sdk = vi.hoisted(() => ({ poses: [], cameras: [], startError: null, initGate: null, sendGate: null,
+  cameraGate: null, stopGate: null, closeGate: null, stream: null }));
 vi.mock('@mediapipe/pose', () => ({
   Pose: class {
     constructor(config) {
       this.config = config;
-      this.close = vi.fn(async () => {});
+      this.close = vi.fn(async () => { await sdk.closeGate; });
       this.setOptions = vi.fn();
       this.initialize = vi.fn(async () => { await sdk.initGate; });
       this.send = vi.fn(async () => { await sdk.sendGate; });
@@ -17,18 +18,21 @@ vi.mock('@mediapipe/pose', () => ({
 vi.mock('@mediapipe/camera_utils', () => ({
   Camera: class {
     constructor(video, options) {
+      this.video = video;
       this.options = options;
       this.start = vi.fn(async () => {
+        const stream = sdk.stream;
+        await sdk.cameraGate;
         if (sdk.startError) throw sdk.startError;
-        video.srcObject = sdk.stream;
+        video.srcObject = stream;
         video.onloadedmetadata = vi.fn();
       });
-      this.stop = vi.fn(async () => {});
+      this.stop = vi.fn(async () => { await sdk.stopGate; });
       sdk.cameras.push(this);
     }
   }
 }));
-import { PoseTracker } from '../src/vision/PoseTracker.js';
+import { PoseTracker, POSE_TIMEOUTS } from '../src/vision/PoseTracker.js';
 
 let now, track, ctx, video, canvas, callbacks, tracker;
 const pose = () => {
@@ -54,12 +58,13 @@ beforeEach(() => {
   now = 0;
   vi.spyOn(performance, 'now').mockImplementation(() => now);
   vi.stubGlobal('isSecureContext', true);
-  vi.stubGlobal('document', { hidden: false });
+  vi.stubGlobal('document', { hidden: false, createElement: () => ({ pause: vi.fn() }) });
   vi.stubGlobal('navigator', { mediaDevices: { getUserMedia: vi.fn() } });
   vi.stubGlobal('requestAnimationFrame', vi.fn(() => 123));
   vi.stubGlobal('cancelAnimationFrame', vi.fn());
   sdk.poses.length = sdk.cameras.length = 0;
   sdk.startError = sdk.initGate = sdk.sendGate = null;
+  sdk.cameraGate = sdk.stopGate = sdk.closeGate = null;
   track = { readyState: 'live', stop: vi.fn(), addEventListener: vi.fn(), removeEventListener: vi.fn() };
   sdk.stream = { getVideoTracks: () => [track], getTracks: () => [track] };
   ctx = Object.fromEntries(['clearRect', 'drawImage', 'beginPath', 'moveTo', 'lineTo', 'stroke', 'arc', 'fill'].map((key) => [key, vi.fn()]));
@@ -67,6 +72,136 @@ beforeEach(() => {
   canvas = { width: 640, height: 480, getContext: () => ctx };
   callbacks = { onPoseUpdate: vi.fn(), onStatusChange: vi.fn(), onCalibrationComplete: vi.fn(), onFrameMetrics: vi.fn(), onStreamStateChange: vi.fn() };
   tracker = new PoseTracker(video, canvas, callbacks);
+});
+
+describe('final audit: bounded cancellation and session isolation', () => {
+  it('settles stop and startup even when model initialization never completes', async () => {
+    sdk.initGate = new Promise(() => {});
+    const pending = tracker.init(), stopped = tracker.stop();
+    await vi.advanceTimersByTimeAsync(POSE_TIMEOUTS.CLEANUP);
+    await Promise.all([pending, stopped]);
+    expect(sdk.cameras).toHaveLength(0);
+    expect(tracker.isRunning).toBe(false);
+    expect(tracker.pose).toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
+    sdk.initGate = null;
+    await tracker.init();
+    expect(tracker.isRunning).toBe(true);
+  });
+
+  it('disposes a model that initializes after cancellation without changing a restarted session', async () => {
+    let finish;
+    sdk.initGate = new Promise((resolve) => { finish = resolve; });
+    const pending = tracker.init(), stopped = tracker.stop();
+    await vi.advanceTimersByTimeAsync(POSE_TIMEOUTS.CLEANUP);
+    await Promise.all([pending, stopped]);
+    sdk.initGate = null;
+    await tracker.init();
+    const current = tracker.pose;
+    finish();
+    await flush();
+    expect(sdk.poses[0].close).toHaveBeenCalledTimes(2); // Early disposal and late graph disposal.
+    expect(current.close).not.toHaveBeenCalled();
+    expect(tracker.pose).toBe(current);
+    expect(tracker.isRunning).toBe(true);
+  });
+
+  it('stops a late permission-granted stream and never overwrites the new camera', async () => {
+    let grant;
+    sdk.cameraGate = new Promise((resolve) => { grant = resolve; });
+    const oldStream = sdk.stream;
+    const pending = tracker.init();
+    await flush();
+    expect(sdk.cameras).toHaveLength(1);
+    await tracker.stop();
+    await pending;
+    const newTrack = { ...track, stop: vi.fn() };
+    const newStream = sdk.stream = { getTracks: () => [newTrack], getVideoTracks: () => [newTrack] };
+    sdk.cameraGate = null;
+    await tracker.init();
+    grant();
+    await flush();
+    expect(oldStream.getTracks()[0].stop).toHaveBeenCalled();
+    expect(newTrack.stop).not.toHaveBeenCalled();
+    expect(video.srcObject).toBe(newStream);
+    expect(sdk.cameras[0].video.srcObject).toBeNull();
+    expect(sdk.cameras[0].video.onloadedmetadata).toBeNull();
+    expect(tracker.isRunning).toBe(true);
+  });
+
+  it('releases tracks immediately and finishes stop with hung inference, camera stop and model close', async () => {
+    await tracker.init();
+    sdk.sendGate = sdk.stopGate = sdk.closeGate = new Promise(() => {});
+    const tick = requestAnimationFrame.mock.lastCall[0]();
+    await flush();
+    const stopped = tracker.stop();
+    expect(track.stop).toHaveBeenCalled(); // SDK stop is not needed to release hardware.
+    expect(video.srcObject).toBeNull();
+    await vi.advanceTimersByTimeAsync(2 * POSE_TIMEOUTS.CLEANUP);
+    await Promise.all([tick, stopped]);
+    expect(tracker._sendPromise).toBeNull();
+    expect(tracker._startPromise).toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('does not let an old inference completion or disconnect clear the new frame/stream', async () => {
+    await tracker.init();
+    const oldEnded = track.addEventListener.mock.calls[0][1];
+    let finish;
+    sdk.sendGate = new Promise((resolve) => { finish = resolve; });
+    const oldTick = requestAnimationFrame.mock.lastCall[0]();
+    await flush();
+    const stopped = tracker.stop();
+    await vi.advanceTimersByTimeAsync(POSE_TIMEOUTS.CLEANUP);
+    await stopped;
+    sdk.sendGate = null;
+    await tracker.init();
+    sdk.sendGate = new Promise(() => {});
+    const newTick = requestAnimationFrame.mock.lastCall[0]();
+    await flush();
+    const newSend = tracker._sendPromise, newFrame = tracker._currentFrame;
+    finish(); oldEnded();
+    await oldTick;
+    expect(tracker._sendPromise).toBe(newSend);
+    expect(tracker._currentFrame).toBe(newFrame);
+    expect(tracker.isRunning).toBe(true);
+    const finalStop = tracker.stop();
+    await vi.advanceTimersByTimeAsync(POSE_TIMEOUTS.CLEANUP);
+    await Promise.all([newTick, finalStop]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(['model', 'camera', 'playback', 'inference'])('bounds a hung %s operation and reports a retryable error', async (phase) => {
+    const never = new Promise(() => {});
+    let operation, timeout;
+    if (phase === 'model') { sdk.initGate = never; timeout = POSE_TIMEOUTS.MODEL; }
+    if (phase === 'camera') { sdk.cameraGate = never; timeout = POSE_TIMEOUTS.CAMERA; }
+    if (phase === 'playback') { video.play.mockReturnValueOnce(never); timeout = POSE_TIMEOUTS.PLAY; }
+    if (phase === 'inference') {
+      await tracker.init();
+      sdk.sendGate = never;
+      operation = requestAnimationFrame.mock.lastCall[0]();
+      timeout = POSE_TIMEOUTS.INFERENCE;
+    } else {
+      operation = tracker.init();
+      // Attach rejection handling before advancing timers; no unhandled rejection.
+      operation = expect(operation).rejects.toThrow('timed out');
+    }
+    await vi.advanceTimersByTimeAsync(timeout + 2 * POSE_TIMEOUTS.CLEANUP);
+    await operation;
+    await tracker._stopPromise;
+    expect(tracker.isRunning).toBe(false);
+    expect(callbacks.onStatusChange.mock.lastCall[0]).toContain('timed out');
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each([null, { poseLandmarks: {} }, { poseLandmarks: pose(), poseWorldLandmarks: {} }])(
+    'invalidates malformed model output without throwing: %j', (result) => {
+      hold();
+      expect(() => tracker._handleResults(result)).not.toThrow();
+      expect(callbacks.onPoseUpdate.mock.lastCall[0]).toBeNull();
+    }
+  );
 });
 
 afterEach(async () => {

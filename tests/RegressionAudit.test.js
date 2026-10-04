@@ -8,10 +8,11 @@ vi.mock('phaser', () => ({ default: {
 } }));
 vi.mock('@mediapipe/pose', () => ({ Pose: class {} }));
 vi.mock('@mediapipe/camera_utils', () => ({ Camera: class {} }));
-import { GameScene, RUNNER } from '../src/game/GameScene.js';
+import { GameScene, RUNNER, speedForScore } from '../src/game/GameScene.js';
 import { GestureClassifier } from '../src/vision/GestureClassifier.js';
 import { PoseTracker } from '../src/vision/PoseTracker.js';
-import { classifySquatDepth } from '../src/analytics/Kinematics.js';
+import { classifySquatDepth, calculate3DAngle, calculateKneeFlexion, calculateHipFlexion,
+  calculateTorsoLean, calculateStanceWidthRatio, estimateJumpHeight, midpoint } from '../src/analytics/Kinematics.js';
 
 const baseline = { baselineHipY: 0.45, baselineFootY: 0.87, torsoHeight: 0.25, shoulderWidth: 0.2 };
 function standing(lift = 0, splitFeet = false) {
@@ -270,5 +271,89 @@ describe('squat labels never inherit the knee-level heuristic', () => {
     [120, 135, 'Deep/full squat'], [65, 65, 'Transition']])('%s/%s remains %s at knee level', (hip, knee, category) => {
     expect(classifySquatDepth(hip, knee, 0.7, 0.7)).toEqual({ depthCategory: category, isHipsAtKneeLevel: true });
     expect(classifySquatDepth(hip, knee, 0.5, 0.7)).toEqual({ depthCategory: category, isHipsAtKneeLevel: false });
+  });
+});
+
+describe('final production audit: corrupted input and numeric boundaries', () => {
+  const p = (x, y = 0, z = 0, visibility = 1) => ({ x, y, z, visibility });
+
+  it('includes the exact 0.02 knee-level boundary despite binary subtraction roundoff', () => {
+    expect(classifySquatDepth(50, 50, 0.52, 0.5)).toEqual({ depthCategory: 'Quarter squat', isHipsAtKneeLevel: true });
+    expect(classifySquatDepth(50, 50, 0.520001, 0.5)).toEqual({ depthCategory: 'Quarter squat', isHipsAtKneeLevel: false });
+  });
+
+  it('rejects overflowing segment subtraction/norms and stance ratios without NaN or Infinity', () => {
+    const large = Number.MAX_VALUE;
+    for (const fn of [calculate3DAngle, calculateKneeFlexion, calculateHipFlexion]) {
+      expect(fn(p(large), p(-large), p(0, 1))).toBeNull();
+      expect(fn(p(large, large), p(0), p(0, 1))).toBeNull();
+    }
+    expect(calculateTorsoLean(p(large, large), p(-large, -large))).toBeNull();
+    expect(calculateStanceWidthRatio(p(large), p(-large), 0.2)).toBeNull();
+    expect(calculateStanceWidthRatio(p(large), p(0), 1e-7)).toBeNull();
+    expect(midpoint(p(large, large, large), p(large, large, large))).toEqual(p(large, large, large));
+  });
+
+  it.each([0, -0, -1, NaN, Infinity, '0.5', {}, Number.MAX_VALUE, Number.MIN_VALUE])(
+    'rejects non-positive, corrupted, overflowing or underflowing flight time %s', (time) => {
+      expect(estimateJumpHeight(time)).toBeNull();
+    }
+  );
+
+  it('rejects corrupted confidence and missing vertices consistently', () => {
+    for (const bad of [null, undefined, p(0, 0, 0, 1.01), p(0, 0, 0, Infinity)]) {
+      for (const fn of [calculate3DAngle, calculateKneeFlexion, calculateHipFlexion]) {
+        expect(fn(bad, p(0, 1), p(1, 1))).toBeNull();
+      }
+      expect(calculateTorsoLean(bad, p(0, 1))).toBeNull();
+      expect(calculateStanceWidthRatio(bad, p(0, 1), 0.2)).toBeNull();
+      expect(midpoint(bad, p(0, 1))).toBeNull();
+    }
+  });
+
+  it.each([null, {}, [null], [{ landmarks: standing() }], [{ landmarks: standing(), frame: { timestamp: NaN } }]])(
+    'leaves malformed calibration history disarmed without throwing: %j', (history) => {
+      const classifier = new GestureClassifier();
+      expect(() => classifier.completeCalibration(baseline, history)).not.toThrow();
+      expect(classifier.metrics).toMatchObject({ armed: false, valid: false });
+    }
+  );
+
+  it('rejects repeated/out-of-order calibration frames even after a valid neutral hold', () => {
+    const hold = [0, 40, 80, 120, 160].map((timestamp) => ({ landmarks: standing(), frame: { timestamp } }));
+    for (const timestamp of [160, 80]) {
+      const classifier = new GestureClassifier();
+      classifier.completeCalibration(baseline, [...hold, { landmarks: standing(), frame: { timestamp } }]);
+      expect(classifier.metrics).toMatchObject({ armed: false, valid: false });
+    }
+  });
+
+  it('handles malformed landmark arrays/world output and explicit null context safely', () => {
+    const classifier = new GestureClassifier();
+    expect(classifier.update(Object.assign({}, standing()), baseline, 0).valid).toBe(false);
+    expect(classifier.update(standing(), baseline, 20, { worldLandmarks: {} }).valid).toBe(false);
+    expect(classifier.update(standing(), baseline, 40, null).valid).toBe(true);
+    expect(classifier.update(standing(), baseline, -1).valid).toBe(false);
+    classifier.update(standing(), { ...baseline, torsoHeight: Number.MAX_VALUE }, 60);
+    expect(classifier.metrics.armed).toBe(false);
+  });
+
+  it('discards velocity history if a tiny timestamp interval would overflow division', () => {
+    const classifier = new GestureClassifier();
+    classifier.update(standing(), baseline, 0);
+    classifier.update(standing(0.1), baseline, Number.MIN_VALUE);
+    expect(classifier.metrics).toMatchObject({ valid: false, armed: false, kneeFlexion: null });
+  });
+
+  it.each([NaN, Infinity, -Infinity, undefined])('does not poison score/physics with invalid delta or score %s', (value) => {
+    const scene = sceneFixture();
+    scene.update(0, value);
+    expect(scene.score).toBe(0);
+    expect(scene.distance).toBe(0);
+    expect(scene.runTimeMs).toBe(0);
+    expect(speedForScore(value)).toBe(RUNNER.BASE_SPEED);
+    scene.update(16, 16);
+    expect(scene.distance).toBeGreaterThan(0);
+    expect(Number.isFinite(scene.score)).toBe(true);
   });
 });

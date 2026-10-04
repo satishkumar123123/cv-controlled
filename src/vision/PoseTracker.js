@@ -4,6 +4,27 @@ import { GestureClassifier, FOOT_BASELINES, groundContactTolerance } from './Ges
 
 // Match the pinned package version. Override assetBaseUrl to self-host assets.
 const ASSETS = 'https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5.1675469404';
+export const POSE_TIMEOUTS = Object.freeze({ MODEL: 30000, CAMERA: 30000, PLAY: 10000, INFERENCE: 5000, CLEANUP: 1000 });
+
+// Cancellation settles our callers even when a browser/SDK promise never does.
+// Always attach both settlement handlers so late rejection is also consumed.
+function bounded(operation, timeoutMs, label, signal) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', cancel);
+      callback(value);
+    };
+    const cancel = () => finish(reject, Object.assign(new Error('Camera operation cancelled.'), { name: 'AbortError' }));
+    const timer = setTimeout(() => finish(reject, new Error(`${label} timed out. Click Start camera to retry.`)), timeoutMs);
+    signal?.addEventListener('abort', cancel, { once: true });
+    Promise.resolve(operation).then((value) => finish(resolve, value), (error) => finish(reject, error));
+    if (signal?.aborted) cancel();
+  });
+}
 const REQUIRED = [11, 12, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32];
 const CONNECTIONS = [
   [11, 12], [11, 23], [12, 24], [23, 24],
@@ -60,12 +81,15 @@ export class PoseTracker {
     if (this._startPromise) return this._startPromise;
     if (this.isRunning) return;
     const generation = ++this._generation;
+    const session = this._session = { generation, controller: new AbortController(), listeners: [] };
+    this._trackListeners = session.listeners;
     this.isRunning = true;
-    this._startPromise = this._start(generation);
-    try { await this._startPromise; } finally { this._startPromise = null; }
+    const start = this._startPromise = this._start(session);
+    try { await start; } finally { if (this._startPromise === start) this._startPromise = null; }
   }
 
-  async _start(generation) {
+  async _start(session) {
+    const { generation, controller } = session;
     try {
       if (!globalThis.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
         throw new Error('Open this app on HTTPS or localhost to use the webcam.');
@@ -75,7 +99,7 @@ export class PoseTracker {
       this.baseline = null;
       this._invalidate();
       const pose = new Pose({ locateFile: (file) => `${this.assetBaseUrl}/${file}` });
-      this.pose = pose;
+      this.pose = session.pose = pose;
       pose.setOptions({
         modelComplexity: 0, smoothLandmarks: false, enableSegmentation: false,
         minDetectionConfidence: 0.65, minTrackingConfidence: 0.65
@@ -101,11 +125,14 @@ export class PoseTracker {
         }
         this._handleResults(results);
       });
-      await pose.initialize();
+      session.work = pose.initialize();
+      session.workKind = 'model';
+      await bounded(session.work, POSE_TIMEOUTS.MODEL, 'Pose model loading', controller.signal);
       if (!this._isActive(generation)) return;
+      session.work = null;
       this._setStatus('Allow camera access; keep your whole body in view.');
       const onFrame = async (_now, metadata = {}) => {
-        if (!this._isActive(generation) || this._sendPromise || document.hidden || this.video.readyState < 2) return;
+        if (!this._isActive(generation) || session.sendPromise || document.hidden || this.video.readyState < 2) return;
         try {
           this._frameStartedAt = performance.now();
           // Metadata uses the same monotonic origin as performance.now(). Most
@@ -115,36 +142,55 @@ export class PoseTracker {
             : available(metadata.presentationTime) ? 'video-presentation' : 'frame-acquisition';
           const capturedAt = captureSource === 'camera-capture' ? metadata.captureTime
             : captureSource === 'video-presentation' ? metadata.presentationTime : this._frameStartedAt;
-          this._currentFrame = {
+          this._currentFrame = session.frame = {
             frameId: ++this._frameSequence, capturedAt, captureSource,
             inferenceStartedAt: performance.now()
           };
-          this._sendPromise = pose.send({ image: this.video });
-          await this._sendPromise;
+          this._sendPromise = session.work = session.sendPromise = pose.send({ image: this.video });
+          session.workKind = 'inference';
+          await bounded(session.sendPromise, POSE_TIMEOUTS.INFERENCE, 'Pose inference', controller.signal);
         } catch (error) {
           if (this._isActive(generation)) this._fail(error);
         } finally {
-          this._sendPromise = null;
-          this._currentFrame = null;
+          session.sendPromise = null;
+          session.frame = null;
+          if (this._isActive(generation)) {
+            session.work = null;
+            this._sendPromise = null;
+            this._currentFrame = null;
+          }
         }
       };
-      this.camera = new Camera(this.video, { width: 640, height: 480, facingMode: 'user', onFrame });
-      await this.camera.start();
-      // camera_utils 0.3 starts an uncancellable RAF chain from onloadedmetadata.
-      // Replace that handler before the metadata event; own the frame scheduling
-      // so stop/retry/HMR never leak inference loops. Camera still owns capture.
-      this.video.onloadedmetadata = null;
+      // The SDK cannot cancel getUserMedia. Isolate acquisition on a private
+      // video so a late permission grant can never replace a restarted stream.
+      const capture = session.capture = document.createElement('video');
+      capture.muted = true;
+      capture.playsInline = true;
+      this.camera = session.camera = new Camera(capture, { width: 640, height: 480, facingMode: 'user', onFrame });
+      const cameraStart = session.camera.start();
+      // This microtask precedes loadedmetadata's task. Never launch the SDK's
+      // uncancellable RAF loop, including when acquisition finishes after stop.
+      const acquired = Promise.resolve(cameraStart).then(() => {
+        capture.onloadedmetadata = null;
+        if (controller.signal.aborted) this._releaseCapture(session);
+      });
+      await bounded(acquired, POSE_TIMEOUTS.CAMERA, 'Camera permission/acquisition', controller.signal);
       if (!this._isActive(generation)) return;
-      const tracks = this.video.srcObject?.getVideoTracks() ?? [];
+      const tracks = capture.srcObject?.getVideoTracks() ?? [];
       if (!tracks.length || tracks.every((track) => track.readyState === 'ended')) {
         throw new Error('The webcam could not start. Check camera permissions and retry.');
       }
+      session.stream = capture.srcObject;
+      this.video.srcObject = session.stream;
+      this.video.onloadedmetadata = null;
       for (const track of tracks) {
-        const ended = () => this._fail(new Error('Camera disconnected. Reconnect it and click Start camera.'));
+        const ended = () => {
+          if (this._isActive(generation)) this._fail(new Error('Camera disconnected. Reconnect it and click Start camera.'));
+        };
         track.addEventListener('ended', ended);
-        this._trackListeners.push([track, ended]);
+        session.listeners.push([track, ended]);
       }
-      await this.video.play();
+      await bounded(this.video.play(), POSE_TIMEOUTS.PLAY, 'Camera playback', controller.signal);
       if (!this._isActive(generation)) return;
       this.onStreamStateChange({ active: true, settings: tracks[0].getSettings?.() ?? {} });
       this._lastResultAt = performance.now();
@@ -152,8 +198,8 @@ export class PoseTracker {
       let lastVideoTime = -1;
       const useVideoCallback = typeof this.video.requestVideoFrameCallback === 'function';
       const schedule = () => {
-        if (useVideoCallback) this._videoFrameId = this.video.requestVideoFrameCallback(tick);
-        else this._frameId = requestAnimationFrame(tick);
+        if (useVideoCallback) this._videoFrameId = session.videoFrameId = this.video.requestVideoFrameCallback(tick);
+        else this._frameId = session.frameId = requestAnimationFrame(tick);
       };
       const tick = async (now, metadata) => {
         if (!this._isActive(generation)) return;
@@ -164,7 +210,7 @@ export class PoseTracker {
         if (this._isActive(generation)) schedule();
       };
       schedule();
-      this._watchdog = setInterval(() => {
+      this._watchdog = session.watchdog = setInterval(() => {
         if (!this._isActive(generation)) return;
         if (document.hidden || performance.now() - this._lastResultAt > 500) {
           this._invalidate(document.hidden ? 'Paused — return to this tab.' : 'Waiting for fresh camera frames…');
@@ -172,14 +218,16 @@ export class PoseTracker {
         }
       }, 250);
     } catch (error) {
+      const cancelled = controller.signal.aborted;
       if (this._isActive(generation)) {
         this.isRunning = false;
         this.onStreamStateChange({ active: false });
         this._invalidate();
         this._setStatus(`Camera error: ${this._errorMessage(error)}`);
       }
-      await this._release();
-      throw error;
+      await this._release(session);
+      // Stop is successful cancellation, not a camera permission failure.
+      if (!cancelled) throw error;
     }
   }
 
@@ -211,7 +259,7 @@ export class PoseTracker {
 
   _visible(point) {
     return point != null && Number.isFinite(point.x) && Number.isFinite(point.y) &&
-      Number.isFinite(point.visibility) && point.visibility >= this.visibilityThreshold &&
+      Number.isFinite(point.visibility) && point.visibility >= this.visibilityThreshold && point.visibility <= 1 &&
       point.x >= 0 && point.x <= 1 && point.y >= 0 && point.y <= 1;
   }
 
@@ -222,7 +270,8 @@ export class PoseTracker {
     const previous = this[key];
     this[key] = landmarks.map((point, index) => {
       const visible = world
-        ? point && ['x', 'y', 'z', 'visibility'].every((axis) => Number.isFinite(point[axis])) && point.visibility >= this.visibilityThreshold
+        ? point && ['x', 'y', 'z', 'visibility'].every((axis) => Number.isFinite(point[axis])) &&
+          point.visibility >= this.visibilityThreshold && point.visibility <= 1
         : this._visible(point);
       if (!visible) return null;
       const old = previous?.[index];
@@ -230,7 +279,7 @@ export class PoseTracker {
       if (old) {
         for (const axis of ['x', 'y', 'z']) {
           if (Number.isFinite(point[axis]) && Number.isFinite(old[axis])) {
-            next[axis] = old[axis] + alpha * (point[axis] - old[axis]);
+            next[axis] = (1 - alpha) * old[axis] + alpha * point[axis];
           }
         }
       }
@@ -246,10 +295,15 @@ export class PoseTracker {
     const dt = this._lastResultAt == null ? 1000 / 30 : now - this._lastResultAt;
     this._lastResultAt = now;
     if (dt > 500) this._invalidate();
-    const raw = results.poseLandmarks;
+    const raw = results?.poseLandmarks;
     // Gate raw confidence BEFORE EMA so a previously confident leg cannot leak.
-    if (!raw || !REQUIRED.every((index) => this._visible(raw[index]))) {
+    if (!Array.isArray(raw) || !REQUIRED.every((index) => this._visible(raw[index]))) {
       this._invalidate('Tracking lost — show shoulders, hips, knees and both feet.');
+      this._draw(results?.image, null);
+      return;
+    }
+    if (results.poseWorldLandmarks != null && !Array.isArray(results.poseWorldLandmarks)) {
+      this._invalidate('Tracking lost — joint geometry unavailable.');
       this._draw(results.image, null);
       return;
     }
@@ -413,7 +467,7 @@ export class PoseTracker {
   }
 
   _fail(error) {
-    // Cleanup waits for the current frame, so do not await it inside onFrame.
+    // Do not await shutdown from inside the operation being cancelled.
     void this.stop(`Camera error: ${this._errorMessage(error)}`);
   }
 
@@ -422,36 +476,67 @@ export class PoseTracker {
     this.isRunning = false;
     this.onStreamStateChange({ active: false });
     this._generation += 1;
-    cancelAnimationFrame(this._frameId);
-    if (this._videoFrameId != null) this.video.cancelVideoFrameCallback?.(this._videoFrameId);
-    clearInterval(this._watchdog);
     this.baseline = null;
     this._invalidate(undefined, true);
     this._setStatus(status);
-    this._stopPromise = (async () => {
-      try { await this._startPromise; } catch { /* Startup reports its error. */ }
-      await this._release();
-    })();
-    try { await this._stopPromise; } finally { this._stopPromise = null; }
+    const stopped = this._stopPromise = this._release(this._session);
+    try { await stopped; } finally { if (this._stopPromise === stopped) this._stopPromise = null; }
   }
 
-  async _release() {
-    cancelAnimationFrame(this._frameId);
-    if (this._videoFrameId != null) this.video.cancelVideoFrameCallback?.(this._videoFrameId);
-    this._videoFrameId = null;
-    clearInterval(this._watchdog);
-    this.video.onloadedmetadata = null;
-    for (const [track, listener] of this._trackListeners) track.removeEventListener('ended', listener);
-    this._trackListeners = [];
-    const camera = this.camera, pose = this.pose;
-    this.camera = null;
-    this.pose = null;
-    try { await camera?.stop(); } catch (error) { console.warn('Camera cleanup:', error); }
-    for (const track of this.video.srcObject?.getTracks() ?? []) track.stop();
-    this.video.srcObject = null;
-    this.video.pause();
-    try { await this._sendPromise; } catch { /* Frame errors are already reported. */ }
-    try { await pose?.close(); } catch (error) { console.warn('Pose cleanup:', error); }
-    this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+  _releaseCapture(session) {
+    const capture = session.capture;
+    if (!capture) return;
+    capture.onloadedmetadata = null;
+    for (const track of capture.srcObject?.getTracks() ?? []) track.stop();
+    capture.srcObject = null;
+    capture.pause();
+  }
+
+  /** Detach synchronously; bound SDK disposal and isolate every late completion. */
+  async _release(session) {
+    if (!session) { this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height); return; }
+    if (session.releasePromise) return session.releasePromise;
+    session.controller.abort();
+    cancelAnimationFrame(session.frameId);
+    if (session.videoFrameId != null) this.video.cancelVideoFrameCallback?.(session.videoFrameId);
+    clearInterval(session.watchdog);
+    for (const [track, listener] of session.listeners) track.removeEventListener('ended', listener);
+    session.listeners.length = 0;
+    // Neither HMR nor a late previous-session cleanup may clear a new stream.
+    if (session.stream && this.video.srcObject === session.stream) {
+      for (const track of session.stream.getTracks()) track.stop();
+      this.video.srcObject = null;
+      this.video.onloadedmetadata = null;
+      this.video.pause();
+    }
+    this._releaseCapture(session);
+    if (this._session === session) {
+      this._session = null;
+      this.camera = this.pose = this._sendPromise = this._currentFrame = null;
+      this._frameStartedAt = this._lastResultAt = null;
+      this._frameId = this._videoFrameId = this._watchdog = null;
+      this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    }
+    const dispose = (resource) => {
+      try { return Promise.resolve(resource?.()).catch((error) => console.warn('SDK cleanup:', error)); }
+      catch (error) { console.warn('SDK cleanup:', error); return Promise.resolve(); }
+    };
+    const cameraStop = dispose(session.camera && (() => session.camera.stop()));
+    session.releasePromise = (async () => {
+      let workSettled = true;
+      if (session.work) {
+        await bounded(session.work, POSE_TIMEOUTS.CLEANUP, 'Pending pose operation')
+          .catch(() => { workSettled = false; });
+      }
+      const close = () => dispose(session.pose && (() => session.pose.close()));
+      const poseClose = close();
+      // A cancelled initialize can allocate its graph AFTER early close. Dispose
+      // that late graph too; this continuation owns only the old session.
+      if (!workSettled && session.workKind === 'model') {
+        Promise.resolve(session.work).then(() => bounded(close(), POSE_TIMEOUTS.CLEANUP, 'Late model cleanup').catch(() => {}), () => {});
+      }
+      await bounded(Promise.all([cameraStop, poseClose]), POSE_TIMEOUTS.CLEANUP, 'SDK cleanup').catch(() => {});
+    })();
+    return session.releasePromise;
   }
 }

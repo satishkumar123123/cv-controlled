@@ -82,6 +82,25 @@ beforeEach(async () => {
 });
 afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
+it('lets the user cancel pending camera startup and immediately retry', async () => {
+  const button = elements.find((node) => node.textContent === 'Start camera');
+  const click = button.addEventListener.mock.calls.find(([name]) => name === 'click')[1];
+  let finish;
+  app.tracker.init = vi.fn(() => new Promise((resolve) => { finish = resolve; }));
+  app.tracker.stop = vi.fn(async () => { app.tracker.isRunning = false; finish(); });
+  const pending = click();
+  expect(button.textContent).toBe('Cancel camera startup');
+  expect(button.disabled).toBe(false);
+  await click();
+  await pending;
+  expect(app.tracker.init).toHaveBeenCalledOnce();
+  expect(app.tracker.stop).toHaveBeenCalledOnce();
+  expect(button.textContent).toBe('Start camera');
+  app.tracker.init.mockResolvedValueOnce();
+  await click();
+  expect(app.tracker.init).toHaveBeenCalledTimes(2);
+});
+
 it('connects real classification to Phaser jump and all dashboard measurements', () => {
   for (let t = 0; t <= 200; t += 20) feed(t);
   for (let t = 220; t <= 720; t += 20) feed(t, points(0.14 * Math.sin(Math.PI * (t - 220) / 500)));
@@ -97,6 +116,7 @@ it('connects real classification to Phaser jump and all dashboard measurements',
   expect(text('torso-lean')).toBe('0.0');
   expect(text('stance-width')).toBe('1.00');
   expect(app.game.registry.get('gestureState')).toBe('LANDING_COOLDOWN');
+  expect(app.game.registry.get('poseTrackingValid')).toBe(true);
 });
 
 it('holds duck, releases it on missing input, clears metrics, and preserves calibration messages', () => {
@@ -111,6 +131,7 @@ it('holds duck, releases it on missing input, clears metrics, and preserves cali
   expect(text('knee-angle')).toBe('—');
   expect(text('pause-duration')).toBe('—');
   expect(app.scene.jump).not.toHaveBeenCalled();
+  expect(app.game.registry.get('poseTrackingValid')).toBe(false);
   app.tracker.callbacks.onPoseUpdate(null, null);
   app.tracker.callbacks.onStatusChange('Calibrating — hold still: 3s');
   expect(text('state-val')).toBe('Calibrating — hold still: 3s');
@@ -131,6 +152,7 @@ it.each([23, 24, 25, 26, 27, 28, 29, 30, 31, 32])('clears all analytics when low
   expect(text('state-val')).toContain('below 0.65 visibility');
   const metrics = app.game.registry.get('gestureMetrics');
   expect(metrics).toMatchObject({ valid: false, armed: false, kneeFlexion: null, jumpHeight: null, flightTime: null });
+  expect(app.game.registry.get('poseTrackingValid')).toBe(false);
   expect(app.scene.desiredDuckState).toBe(false);
   expect(app.scene.setControllerStatus).toHaveBeenLastCalledWith(false, false, expect.any(String));
   for (let t = 840; t <= 1600; t += 20) feed(t);

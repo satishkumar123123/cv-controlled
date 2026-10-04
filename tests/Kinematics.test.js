@@ -78,12 +78,12 @@ describe('kinematics with confidence and degeneracy checks', () => {
     expect(classifySquatDepth(190, 90, 0.5, 0.7).depthCategory).toBeNull();
     expect(classifySquatDepth(50, 50, NaN, null)).toEqual({ depthCategory: 'Quarter squat', isHipsAtKneeLevel: null });
   });
-  it.each([[0, 0], [0.25, 0.076640625], [0.5, 0.3065625], [0.8, 0.7848], [1, 1.22625]])(
+  it.each([[0.25, 0.076640625], [0.5, 0.3065625], [0.8, 0.7848], [1, 1.22625]])(
     'estimates ballistic height for %ss flight as %sm', (time, expected) => {
       expect(estimateJumpHeight(time)).toBeCloseTo(expected, 7);
     }
   );
   it('rejects invalid flight times', () => {
-    for (const value of [-1, NaN, Infinity, null, '0.5']) expect(estimateJumpHeight(value)).toBeNull();
+    for (const value of [0, -0, -1, NaN, Infinity, null, '0.5']) expect(estimateJumpHeight(value)).toBeNull();
   });
 });

@@ -159,6 +159,7 @@ const classifier = new GestureClassifier({
       ? metrics.isHipsAtKneeLevel ? 'Yes' : 'No' : '—';
     game.registry.set('gestureMetrics', metrics);
     game.registry.set('gestureState', metrics.state);
+    game.registry.set('poseTrackingValid', metrics.valid);
     const scene = game.scene.getScene('GameScene');
     // Actions are edges; ducking is held state. Keep intent synchronized even if
     // DUCK_START was rejected while the virtual player was still in the air.
@@ -213,13 +214,14 @@ game.registry.set('poseLandmarks', null);
 game.registry.set('poseBaseline', null);
 
 function updateControls() {
-  startButton.disabled = starting;
-  startButton.textContent = starting ? 'Please wait…' : tracker.isRunning ? 'Stop camera' : 'Start camera';
+  startButton.disabled = disposed;
+  startButton.textContent = starting ? 'Cancel camera startup' : tracker.isRunning ? 'Stop camera' : 'Start camera';
   calibrateButton.disabled = starting || !tracker.isRunning;
 }
 
 async function startCamera() {
-  if (starting || disposed) return;
+  if (disposed) return;
+  if (starting) { await tracker.stop(); return; }
   starting = true;
   updateControls();
   try {
