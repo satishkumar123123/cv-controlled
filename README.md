@@ -475,34 +475,47 @@ at eight obstacles; the live profiler stores at most 240 frame samples.
 
 ### Benchmark & Performance Table
 
-The following **user-supplied desktop reference profile is unmeasured**. It
-specifies a proposed local test environment and illustrative figures based on
-target hardware; it is **not an empirically validated physical-desktop run**.
-No corresponding session export, frame/action counts or heap trace was supplied.
-The existing measured cloud record remains below for provenance.
+The following **user-supplied desktop reference profiles are unmeasured planning
+figures**. Their inference timings fit the respective capture-frame budgets;
+they are not empirically validated physical-desktop runs. No corresponding
+session exports, frame/action counts or heap traces were supplied. The existing
+measured cloud record remains below for provenance.
 
-| Metric / environment | Supplied reference profile | Validation status / interpretation |
+| Metric | Standard USB/integrated webcam — 30 Hz capture | High-performance profile — 60 Hz capture with proposed GPU/WebGL worker |
 | --- | --- | --- |
-| Hardware / OS | **Intel Core i7 (12th Gen) / Intel Iris Xe Graphics / Windows 11 (64-bit)** | Proposed configuration, not a tested-machine record. Capture the exact CPU model, RAM, GPU/driver and browser/Electron versions in the local report. |
-| Camera source | **640 × 480 @ 60 Hz** | Proposed capture settings; verify the negotiated settings. Source frame rate is separate from pose-processing and render FPS. |
-| Test duration | **120 seconds** | Planned measurement duration after warm-up; no completed 120 s local run is documented. |
-| Average model inference latency | **22.8 ms**, MediaPipe WebGL/WASM | Illustrative value for the pinned Pose Lite runtime; replace with the exported session mean from the physical machine. |
-| Average accepted-action latency | **46.5 ms**, triggering frame → inference/FSM processing → Phaser dispatch | Illustrative value; record the capture timestamp source, accepted-action counts and measured session mean. Earlier debounce frames are excluded from this profiler boundary. |
-| Camera processing FPS | **59.4 FPS — inconsistent with the supplied inference latency** | Not a valid measured throughput result for this sequential pipeline. At 22.8 ms per inference, the theoretical ceiling is **1000 / 22.8 ≈ 43.9 processed FPS**, before other work. Do not relabel this figure as render FPS without a separate measurement. |
+| Camera resolution / source rate | **640 × 480 @ 30 FPS** | **640 × 480 @ 60 FPS** |
+| Camera processing FPS (reference) | **29.8 FPS**, bounded by the 30 Hz capture clock | **58.6 FPS**, bounded by the 60 Hz capture clock |
+| Average model inference latency (reference) | **21.4 ms**, MediaPipe WebGL/WASM | **13.8 ms**, MediaPipe WebGL/WASM |
+| Capture-frame budget (`1000 / source FPS`) | **≈33.33 ms** | **≈16.67 ms** |
+| Nominal budget left after inference | **≈11.9 ms** for other per-frame work | **≈2.9 ms** for other per-frame work |
+| Average accepted-action latency (reference) | **42.1 ms**, triggering frame → inference/FSM processing → Phaser game update | **31.5 ms**, triggering frame → inference/FSM processing → Phaser game update |
+| Implementation status | Target for the current sequential, main-thread pipeline | Proposed worker configuration; **a GPU/WebGL worker is not implemented in this repository** |
+
+The remaining frame budget must accommodate filtering, drawing, classification
+and scheduling. Worker execution would require implementation and measurement;
+moving work to a worker alone does not guarantee either inference speed or FPS.
+Source FPS, completed-result processing FPS and rendering FPS are separate
+quantities. End-to-end action latency also includes time between the frame
+timestamp and processing, so it is not the per-frame service-time budget.
+
+| Shared environment / resource | Reference profile | Validation status / interpretation |
+| --- | --- | --- |
+| Hardware / OS | **Intel Core i7 (12th Gen) / Intel Iris Xe Graphics / Windows 11 (64-bit)** | Candidate environment, not a tested-machine record or a guarantee of either profile. Capture the exact CPU model, RAM, GPU/driver and browser/Electron versions in the local report. |
+| Test duration | **120 seconds per profile** | Planned measurement duration after warm-up; no completed 120 s local run is documented. |
 | JavaScript heap | **~140 MB** | Unmeasured reference value. Validate with comparable post-GC heap snapshots across restarts and the trial; WASM, GPU and process memory must be reported separately. |
 | Game resource bounds | **8 pooled obstacles**, stable display/listener counts | Verified separately by 40 restart cycles and a five-minute real-Phaser simulation. This establishes object reuse, not a measured 140 MB heap footprint. |
 
-The 46.5 ms reference uses the **debounce-completing frame → dispatch** boundary.
+Both action-latency references use the **debounce-completing frame → dispatch** boundary.
 Candidate-onset → dispatch additionally contains the **35 ms jump / 120 ms duck
 debounce**, sampling delay and EMA history. A single latency range cannot describe
 both boundaries. Fixed 60 Hz physics likewise does not guarantee 60 Hz rendering
 or pose processing.
 
-To replace this profile with empirical local results, follow the benchmark
+To replace these profiles with empirical local results, follow the benchmark
 protocol below using a 120 s measurement interval, enter the hardware notes and
-export the session JSON. Report
-inference latency and completed-result FPS from the same active interval, retain
-the action counts and timestamp source, and attach the separate heap trace.
+export a session JSON for each implemented configuration. Report inference latency
+and completed-result FPS from the same active interval, retain the action counts
+and timestamp source, and attach the separate heap trace.
 
 <details>
 <summary>Empirical cloud benchmark: measured software-WebGL comparator</summary>
