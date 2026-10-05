@@ -1,5 +1,51 @@
 # CV-Controlled Endless Runner
 
+### 🎥 Demo Video: [Insert Video Link Here - Optional / Recorded Live]
+
+After the initial dependency/runtime downloads, play fully offline in Electron or a browser served on localhost. The optional live recording is not yet attached.
+
+## Evaluator quick-start
+
+Install **Git and Node.js 22 or 24**, then copy this line into Bash or PowerShell 7:
+
+```bash
+git clone https://github.com/satishkumar123123/cv-controlled.git cv-endless-runner && cd cv-endless-runner && npm ci && npm test && npm run desktop
+```
+
+The explicit clone destination matches `cd cv-endless-runner`. For browser mode,
+replace the final command with `npm run dev` and open **http://localhost:3000**.
+First-install time depends on connection speed and the Electron download; a
+fresh setup cannot be guaranteed to finish in under two minutes.
+
+Windows PowerShell 5.1 does not support `&&`; run these commands one at a time:
+
+```powershell
+git clone https://github.com/satishkumar123123/cv-controlled.git cv-endless-runner
+cd cv-endless-runner
+npm ci
+npm test
+npm run desktop
+```
+
+| Evaluation mode | Start and controls |
+| --- | --- |
+| **Camera control (default)** | Click **Start camera**, stand fully in view for the 3 s calibration, then physically jump or hold a crouch. After collision, **R**, **Space** or **Restart run** restarts. |
+| **Keyboard fallback — no webcam required** | Click **Keyboard test mode**. **Space** jumps, hold **Down Arrow** to duck, release it to stand, and **R** restarts. Space also restarts after collision. Click the game if a text field has focus. |
+
+Keyboard mode stops the camera and clears the pose/performance sample. It tests
+gameplay without generating biomechanical metrics or camera-action latency.
+Switch back with **Use camera controls**, then **Start camera** and recalibrate.
+After focus loss, release held keys and press a fresh control key to resume.
+
+**Submission links:** [Source](https://github.com/satishkumar123123/cv-controlled) ·
+[CI and Windows EXE artifacts](https://github.com/satishkumar123123/cv-controlled/actions/workflows/verify.yml) ·
+[Assignment audit](docs/ASSIGNMENT_AUDIT.md) ·
+[Measured benchmark JSON](benchmarks/2026-10-02-software-webgl.json) ·
+[Manual observation sheet](docs/manual-validation.csv) ·
+[Assignment squat reference](docs/assets/squat-depth-reference.jpg).
+
+## Project overview
+
 A single-webcam endless runner that turns physical **jumps** and **held ducks**
 into responsive Phaser 3 actions. Calibrated foot contact, temporal gesture
 classification and confidence-gated biomechanics run in the browser. The
@@ -8,14 +54,16 @@ and live inference/action timing.
 
 The engineering priority is reliable control: one action per qualifying movement,
 stable recovery after landing, safe tracking loss, and bounded game resources.
-The submission includes **206 passing tests across eight suites**, browser collision
+The submission includes **214 passing tests across eight suites** (the original
+206 plus eight keyboard-mode regression tests), browser collision
 and restart checks, a recorded cloud benchmark, and a target-device evaluation
 protocol. Physical-webcam performance and clinical measurement accuracy require
 separate validation on the evaluator's hardware.
 
 The complete [assignment compliance matrix and manual evaluation protocol](docs/ASSIGNMENT_AUDIT.md)
 identifies the implemented requirements and the remaining physical-device evidence.
-The supplied squat reference image matches the four angular bands documented below.
+The supplied [squat reference image](docs/assets/squat-depth-reference.jpg) matches
+the four angular bands documented below.
 
 | Evaluation criterion | Delivered capability | Evidence |
 | --- | --- | --- |
@@ -70,8 +118,12 @@ npm run desktop:dist  # Create a Windows portable EXE, macOS ZIP, or Linux ZIP o
 Node is required for source commands; packaged applications include their own
 runtime. Evaluate a Windows build on Windows and a macOS build on macOS. The
 provided packages are unsigned; signing/notarization is not configured.
-The GitHub Actions workflow tests the project and builds a Windows portable
-artifact. Download it from the successful workflow run's **Artifacts** section.
+The [GitHub Actions workflow](https://github.com/satishkumar123123/cv-controlled/actions/workflows/verify.yml)
+tests the project and builds a Windows portable artifact. Open the latest successful
+`main` run, select **Artifacts → CV-Controlled-Runner-Windows**, extract the
+downloaded ZIP and launch its EXE. Artifact downloads require a GitHub sign-in
+and expire according to the repository's retention policy; the source commands
+above remain the reproducible delivery path.
 
 `desktop/main.cjs` loads a stable secure `app://runner` origin, with renderer
 Node integration disabled, context isolation/sandboxing enabled, navigation
@@ -105,6 +157,9 @@ is busy. Embedded deployments must also allow camera access in their iframe and
 Permissions Policy. Browser and desktop modes use the locally prepared models.
 
 ## Quick Demo & Testing Guide
+
+For a webcam-free gameplay check, use [Keyboard test mode](#evaluator-quick-start).
+The following protocol evaluates the primary camera controller.
 
 1. **Frame the player:** start about **2–2.5 meters** from a fixed webcam in good
    lighting. Adjust for its field of view until shoulders, hips, knees, heels
@@ -726,8 +781,8 @@ blocks the browser's main thread.
 | `tests/PerformanceMonitor.test.js` | Known clock intervals, processing FPS, action/frame pairing, invalid samples, stale results, pauses, resets, bounded storage and hardware summaries |
 | `tests/ActionRecorder.test.js` | Real-classifier phase history, ankle/hip signs, held crouch, occlusion cancellation, foot-rotation rejection, bounded records and report integrity |
 | `tests/Desktop.test.js` | Local origin/file-path containment and camera-only permission policy |
-| `tests/main.test.js` | Real classifier wired to mocked Phaser/DOM, command acceptance, HUD metrics, summary/reset controls, startup cancellation/retry and invalid tracking flags/metrics for every lower-body landmark |
-| `tests/RegressionAudit.test.js` | Held airborne duck, provisional landing cooldown, divergent heel/toe calibration, high-barrier intersection, independent squat metadata; numeric overflow/underflow, exact knee-level boundary, malformed/replayed calibration, invalid frame intervals/deltas |
+| `tests/main.test.js` | Real classifier wired to mocked Phaser/DOM, command acceptance, HUD metrics, summary/reset controls, startup cancellation/retry and invalid tracking flags/metrics; keyboard-mode cleanup, late-frame isolation and disarmed return to camera |
+| `tests/RegressionAudit.test.js` | Held airborne duck, provisional landing cooldown, divergent heel/toe calibration, high-barrier intersection, independent squat metadata; numeric overflow/underflow, malformed calibration/frame intervals; keyboard hold/release/repeat, blur and restart behavior |
 
 For actual Phaser/browser integration checks (optional extra tooling):
 
@@ -744,6 +799,9 @@ collision bodies, jump/duck clearance, standing restoration, score persistence,
 restart controls, protection, 40 restarts and five minutes of simulated survival.
 Both **R** and **Space** restart keys are checked in the browser, as are listener
 cleanup and unavailable-metric rendering in the real analytics DOM.
+The explicit keyboard fallback is tested with real Space/Down/R input, held-key
+repeat rejection, input focus, blur recovery, mode switches, camera-metric isolation
+and cleanup of all added keyboard listeners.
 They also test a native video callback with a generated canvas stream and pair
 synthetic pose frames with accepted real Phaser actions and the performance HUD.
 Audit regressions exercise max-speed high-barrier collisions at three jump
@@ -751,7 +809,7 @@ timings, same-step landing/duck/obstacle ordering, and a short physical jump
 followed by a rejected duck edge through the real classifier/main/Phaser stack.
 These are integration checks, **not webcam/model inference benchmarks**.
 
-Current verification on 2026-10-04: **206 Vitest tests passed across eight suites**;
+Current verification on 2026-10-05: **214 Vitest tests passed across eight suites**;
 production build and the browser suite passed with no unhandled JavaScript errors.
 Environment: Linux
 6.18.44 x86_64 container, AMD EPYC 9V74 host-reported CPU, 8 available logical

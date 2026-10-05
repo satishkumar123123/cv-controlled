@@ -72,14 +72,22 @@ export class GameScene extends Phaser.Scene {
       this.overlayTitle, this.overlayMessage, this.restartPrompt, this.recalibratePrompt
     ]).setDepth(20);
 
+    // Phaser prevents the native mouse default, so clicking its canvas would
+    // otherwise leave a notes input focused and keep gameplay keys suppressed.
+    this.game.canvas.tabIndex = 0;
+    this.game.canvas.setAttribute('aria-label', 'Runner game. Keyboard test mode: Space to jump, Down to duck, R to restart.');
+    this.input.on('pointerdown', this._focusCanvas, this);
     this.input.keyboard?.on('keydown-SPACE', this._onRestartKey, this);
     this.input.keyboard?.on('keydown-R', this._onRestartKey, this);
+    this.input.keyboard?.on('keydown-DOWN', this._onDuckKey, this);
+    this.input.keyboard?.on('keyup-DOWN', this._onDuckRelease, this);
     this.game.events.on(Phaser.Core.Events.BLUR, this._onBlur, this);
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, this._shutdown, this);
     this._resetRun();
     // Metrics may have arrived before Phaser finished booting.
     const metrics = this.registry.get('gestureMetrics');
-    if (metrics) this.setControllerStatus(metrics.valid, metrics.state === 'NEUTRAL' && metrics.armed);
+    if (this._isKeyboardMode()) this.setControllerStatus(true, true);
+    else if (metrics) this.setControllerStatus(metrics.valid, metrics.state === 'NEUTRAL' && metrics.armed);
   }
 
   _resetRun() {
@@ -102,7 +110,7 @@ export class GameScene extends Phaser.Scene {
     this.player.body.reset(RUNNER.PLAYER_X, RUNNER.GROUND_Y - 30);
     this._scrollGround();
     this._updateHUD();
-    this._showOverlay('READY TO RUN', 'Start camera, calibrate, then stand still.\nRed hurdles: JUMP • Purple barriers: DUCK', false);
+    this._showOverlay('READY TO RUN', 'Start camera and calibrate, or select Keyboard test mode.\nRed hurdles: JUMP • Purple barriers: DUCK', false);
     this.game.events.emit('runner:state', this.runState);
   }
 
@@ -115,7 +123,7 @@ export class GameScene extends Phaser.Scene {
     if (!valid && this.runState === RunState.RUNNING) {
       this.runState = RunState.PAUSED;
       this.physics.pause();
-      this._showOverlay('TRACKING PAUSED', reason || 'Show your full body and stand still to resume.', false);
+      this._showOverlay(this._isKeyboardMode() ? 'GAME PAUSED' : 'TRACKING PAUSED', reason || 'Show your full body and stand still to resume.', false);
       this.game.events.emit('runner:state', this.runState);
     }
     if ((this.runState === RunState.WAITING || this.runState === RunState.PAUSED) && this._controllerNeutral) {
@@ -261,7 +269,8 @@ export class GameScene extends Phaser.Scene {
       .reduce((closest, o) => !closest || o.x < closest.x ? o : closest, null);
     const hint = next ? next.kind === 'LOW' ? 'NEXT: JUMP  ▲' : 'NEXT: DUCK  ▼' : 'STAND READY';
     if (this.hintText.text !== hint) this.hintText.setText(hint).setColor(next?.kind === 'LOW' ? '#fca5a5' : '#a5f3fc');
-    const info = this.runTimeMs < this.invulnerableUntil ? 'Restart protection • get ready' : `Speed ${Math.round(this.speed)} px/s • move to control`;
+    const info = this.runTimeMs < this.invulnerableUntil ? 'Restart protection • get ready'
+      : `Speed ${Math.round(this.speed)} px/s • ${this._isKeyboardMode() ? 'keyboard test: Space / Down' : 'move to control'}`;
     if (this.runInfo.text !== info) this.runInfo.setText(info);
   }
 
@@ -276,7 +285,8 @@ export class GameScene extends Phaser.Scene {
     this.physics.pause(); // Stops collisions, falling and every pooled obstacle.
     this.player.setAlpha(1);
     this.saveHighScore();
-    this._showOverlay('GAME OVER', `Score ${this.score}  •  Best ${this.highScore}\nRestart, or recalibrate if your position changed.`, true);
+    const restartHint = this._isKeyboardMode() ? 'Press R / Space or click Restart.' : 'Restart, or recalibrate if your position changed.';
+    this._showOverlay('GAME OVER', `Score ${this.score}  •  Best ${this.highScore}\n${restartHint}`, true);
     this.game.events.emit('runner:gameover', { score: this.score, highScore: this.highScore });
     this.game.events.emit('runner:state', this.runState);
   }
@@ -290,27 +300,62 @@ export class GameScene extends Phaser.Scene {
     this._resetRun();
     this._showOverlay('READY TO RUN', recalibrate ? 'Complete calibration, then stand still.' : 'Return to your calibrated standing position.\nKeep the camera running to start.', false);
     this.game.events.emit('runner:restartRequested', { recalibrate });
+    if (this._isKeyboardMode()) this.setControllerStatus(true, true);
   }
 
   _showOverlay(title, message, showButtons) {
     this.overlayTitle.setText(title);
     this.overlayMessage.setText(message);
     this.restartPrompt.setVisible(showButtons);
-    this.recalibratePrompt.setVisible(showButtons);
+    this.recalibratePrompt.setVisible(showButtons && !this._isKeyboardMode());
     this.overlay.setVisible(true);
   }
 
-  _onRestartKey(event) {
+  _isKeyboardMode() { return this.registry?.get('controlMode') === 'keyboard'; }
+
+  _focusCanvas() { this.game.canvas.focus({ preventScroll: true }); }
+
+  _ignoreKey(event) {
     // Keep browser shortcuts (e.g. Ctrl/Cmd+R) and focused UI controls intact.
-    if (event.repeat || event.ctrlKey || event.metaKey || event.altKey ||
-        /^(INPUT|TEXTAREA|SELECT|BUTTON)$/.test(event.target?.tagName) || event.target?.isContentEditable) return;
+    return event.repeat || event.ctrlKey || event.metaKey || event.altKey ||
+      /^(INPUT|TEXTAREA|SELECT|BUTTON)$/.test(event.target?.tagName) || event.target?.isContentEditable;
+  }
+
+  _onRestartKey(event) {
+    if (this._ignoreKey(event)) return;
+    if (this._isKeyboardMode()) {
+      event.preventDefault();
+      if (event.code === 'KeyR' || event.key?.toLowerCase() === 'r' || this.runState === RunState.GAME_OVER) this.restartGame();
+      else {
+        // A fresh keypress resumes a blurred test run; repeats never retrigger.
+        this.setControllerStatus(true, true);
+        this.jump();
+      }
+      return;
+    }
     if (this.runState === RunState.GAME_OVER) {
       event.preventDefault();
       this.restartGame();
     }
   }
 
-  _onBlur() { this.setControllerStatus(false, false, 'Return to this tab and stand still to resume.'); }
+  _onDuckKey(event) {
+    if (!this._isKeyboardMode() || this._ignoreKey(event) || this.runState === RunState.GAME_OVER) return;
+    event.preventDefault();
+    this.setControllerStatus(true, true);
+    this.duck(true); // Retains intent if pressed in flight; reconciles on landing.
+  }
+
+  _onDuckRelease() {
+    // Release even if focus moved to an input while the key was held.
+    if (this._isKeyboardMode()) this.duck(false);
+  }
+
+  _onBlur() {
+    this.setControllerStatus(false, false, this._isKeyboardMode()
+      ? 'Keyboard test paused. Return and press Space, Down or R to resume.'
+      : 'Return to this tab and stand still to resume.');
+  }
 
   _readHighScore() {
     try {
@@ -327,8 +372,11 @@ export class GameScene extends Phaser.Scene {
 
   _shutdown() {
     this.saveHighScore();
+    this.input.off('pointerdown', this._focusCanvas, this);
     this.input.keyboard?.off('keydown-SPACE', this._onRestartKey, this);
     this.input.keyboard?.off('keydown-R', this._onRestartKey, this);
+    this.input.keyboard?.off('keydown-DOWN', this._onDuckKey, this);
+    this.input.keyboard?.off('keyup-DOWN', this._onDuckRelease, this);
     this.game.events.off(Phaser.Core.Events.BLUR, this._onBlur, this);
     if (this.groundCollider?.world) this.groundCollider.destroy();
     if (this.obstacleCollider?.world) this.obstacleCollider.destroy();

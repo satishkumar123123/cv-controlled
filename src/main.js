@@ -22,6 +22,7 @@ const config = {
 
 const game = new Phaser.Game(config);
 window.game = game;
+game.registry.set('controlMode', 'camera');
 
 const video = document.querySelector('#webcam');
 const canvas = document.querySelector('#pose-canvas');
@@ -45,7 +46,11 @@ calibrateButton.disabled = true;
 const restartButton = document.createElement('button');
 restartButton.type = 'button';
 restartButton.textContent = 'Restart run';
-for (const button of [startButton, calibrateButton, restartButton]) {
+const modeButton = document.createElement('button');
+modeButton.type = 'button';
+modeButton.textContent = 'Keyboard test mode';
+modeButton.setAttribute('aria-pressed', 'false');
+for (const button of [startButton, calibrateButton, restartButton, modeButton]) {
   button.style.cssText = 'padding:8px 10px;border-radius:4px;cursor:pointer';
   controls.append(button);
 }
@@ -149,8 +154,12 @@ renderPerformance();
 let activeFrame = null;
 let streamActive = false;
 let visionStatus = state.textContent;
+let keyboardMode = false;
+let changingMode = false;
+const KEYBOARD_STATUS = 'KEYBOARD TEST — Space: jump • hold Down: duck • R: restart • pose metrics unavailable';
 const classifier = new GestureClassifier({
   onActionTrigger(action, context = {}) {
+    if (keyboardMode) return;
     const scene = game.scene.getScene('GameScene');
     // Do not queue physical actions until Phaser has created its player body.
     if (!scene?.player?.body) return;
@@ -166,9 +175,10 @@ const classifier = new GestureClassifier({
     game.events.emit('gesture:action', action);
   },
   onMetricsUpdate(metrics) {
+    if (keyboardMode && metrics.valid) return;
     actionRecorder.update(metrics);
     actionAnalytics.render(metrics);
-    state.textContent = metrics.valid
+    state.textContent = keyboardMode ? KEYBOARD_STATUS : metrics.valid
       ? `${metrics.state}${metrics.state === 'NEUTRAL' && !metrics.armed ? ' — stand still to rearm' : ''}`
       : visionStatus === 'Tracking — calibrated' ? metrics.reason ?? 'Waiting for valid pose' : visionStatus;
     for (const { element, key, digits } of metricFields) {
@@ -183,10 +193,12 @@ const classifier = new GestureClassifier({
     const scene = game.scene.getScene('GameScene');
     // Actions are edges; ducking is held state. Keep intent synchronized even if
     // DUCK_START was rejected while the virtual player was still in the air.
-    if (scene) scene.desiredDuckState = metrics.valid && metrics.state === 'DUCKING';
-    scene?.setControllerStatus?.(
-      metrics.valid, metrics.state === 'NEUTRAL' && metrics.armed, metrics.reason
-    );
+    if (!keyboardMode) {
+      if (scene) scene.desiredDuckState = metrics.valid && metrics.state === 'DUCKING';
+      scene?.setControllerStatus?.(
+        metrics.valid, metrics.state === 'NEUTRAL' && metrics.armed, metrics.reason
+      );
+    }
     game.events.emit('gesture:metrics', metrics);
   }
 });
@@ -196,24 +208,26 @@ let starting = false;
 let disposed = false;
 const tracker = new PoseTracker(video, canvas, {
   assetBaseUrl: '/pose', // Prepared from the pinned npm package; works offline after install.
-  onFrameMetrics(frame) { performanceMonitor.recordInference(frame); },
+  onFrameMetrics(frame) { if (!keyboardMode) performanceMonitor.recordInference(frame); },
   onStreamStateChange({ active, settings }) {
-    streamActive = active;
+    streamActive = active && !keyboardMode;
     if (settings) performanceMonitor.setCameraSettings(settings);
-    performanceMonitor.setActive(active && !document.hidden);
+    performanceMonitor.setActive(streamActive && !document.hidden);
     renderPerformance();
   },
   onStatusChange(statusText) {
     visionStatus = statusText;
-    if (statusText !== 'Tracking — calibrated' || !classifier.metrics?.valid) state.textContent = statusText;
+    if (!keyboardMode && (statusText !== 'Tracking — calibrated' || !classifier.metrics?.valid)) state.textContent = statusText;
     updateControls();
   },
   onCalibrationComplete(baselineData, neutralSamples = []) {
+    if (keyboardMode) return;
     classifier.completeCalibration(baselineData, neutralSamples);
     game.registry.set('poseBaseline', baselineData);
     game.events.emit('pose:calibrated', baselineData);
   },
   onPoseUpdate(landmarks, baseline, frame = {}) {
+    if (keyboardMode) return;
     // Invalid input cancels incomplete measurements and releases active duck.
     game.registry.set('poseLandmarks', landmarks);
     game.registry.set('poseBaseline', baseline);
@@ -235,13 +249,16 @@ game.registry.set('poseLandmarks', null);
 game.registry.set('poseBaseline', null);
 
 function updateControls() {
-  startButton.disabled = disposed;
+  startButton.disabled = disposed || keyboardMode || changingMode;
   startButton.textContent = starting ? 'Cancel camera startup' : tracker.isRunning ? 'Stop camera' : 'Start camera';
-  calibrateButton.disabled = starting || !tracker.isRunning;
+  calibrateButton.disabled = starting || !tracker.isRunning || keyboardMode || changingMode;
+  modeButton.disabled = disposed || starting || changingMode;
+  modeButton.textContent = keyboardMode ? 'Use camera controls' : 'Keyboard test mode';
+  modeButton.setAttribute('aria-pressed', String(keyboardMode));
 }
 
 async function startCamera() {
-  if (disposed) return;
+  if (disposed || keyboardMode || changingMode) return;
   if (starting) { await tracker.stop(); return; }
   starting = true;
   updateControls();
@@ -257,6 +274,36 @@ async function startCamera() {
   }
 }
 
+async function toggleKeyboardMode() {
+  if (disposed || starting || changingMode) return;
+  changingMode = true;
+  keyboardMode = !keyboardMode;
+  updateControls();
+  try {
+    // Stop capture before starting the test run. Mode guards reject late pose
+    // callbacks, so keyboard actions cannot populate movement/latency reports.
+    streamActive = false;
+    game.scene.getScene('GameScene')?.setControllerStatus?.(false, false, 'Switching controls…');
+    performanceMonitor.setActive(false);
+    performanceMonitor.reset();
+    actionRecorder.reset();
+    classifier.reset();
+    for (const key of ['poseLandmarks', 'poseBaseline']) game.registry.set(key, null);
+    game.registry.set('poseTrackingValid', false);
+    if (keyboardMode) await tracker.stop();
+    if (disposed) return;
+    game.registry.set('controlMode', keyboardMode ? 'keyboard' : 'camera');
+    visionStatus = keyboardMode ? KEYBOARD_STATUS : 'Click Start camera, then stand fully in view.';
+    state.textContent = visionStatus;
+    game.scene.getScene('GameScene')?.restartGame();
+    renderPerformance();
+    modeButton.blur?.(); // Space now controls the game, not the focused toggle.
+  } finally {
+    changingMode = false;
+    updateControls();
+  }
+}
+
 function recalibrate() {
   game.registry.set('poseBaseline', null);
   game.registry.set('poseLandmarks', null);
@@ -266,6 +313,7 @@ function recalibrate() {
 
 function onRunnerRestart({ recalibrate: needsCalibration }) {
   // Invalidate gesture history; restarting must never replay a previous action.
+  if (keyboardMode) { classifier.reset(); return; }
   classifier.reset(needsCalibration ? null : tracker.baseline);
   if (needsCalibration) recalibrate();
 }
@@ -276,12 +324,14 @@ game.events.on('runner:restartRequested', onRunnerRestart);
 startButton.addEventListener('click', startCamera);
 calibrateButton.addEventListener('click', recalibrateRun);
 restartButton.addEventListener('click', restartRun);
+modeButton.addEventListener('click', toggleKeyboardMode);
 const onPageHide = () => {
   game.scene.getScene('GameScene')?.saveHighScore();
   void tracker.stop();
 };
 window.addEventListener('pagehide', onPageHide);
 const onVisibilityChange = () => {
+  if (keyboardMode && document.hidden) game.scene.getScene('GameScene')?._onBlur?.();
   performanceMonitor.setActive(streamActive && !document.hidden);
   renderPerformance();
 };
@@ -293,6 +343,7 @@ if (import.meta.hot) {
     startButton.removeEventListener('click', startCamera);
     calibrateButton.removeEventListener('click', recalibrateRun);
     restartButton.removeEventListener('click', restartRun);
+    modeButton.removeEventListener('click', toggleKeyboardMode);
     game.events.off('runner:restartRequested', onRunnerRestart);
     window.removeEventListener('pagehide', onPageHide);
     document.removeEventListener('visibilitychange', onVisibilityChange);

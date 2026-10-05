@@ -63,14 +63,21 @@ const assert = require('node:assert/strict');
       await page.getByRole('button', { name: 'Start camera', exact: true }).click();
       await page.waitForFunction((count) => window.performanceMonitor.getSummary().processedFrames >= count + 2, previous, { timeout: 60000 });
       await page.evaluate(() => { window.smokeTracks = document.querySelector('#webcam').srcObject.getTracks(); });
-      await page.getByRole('button', { name: 'Stop camera', exact: true }).click();
+      await page.getByRole('button', { name: cycle === 1 ? 'Keyboard test mode' : 'Stop camera', exact: true }).click();
       await page.waitForFunction(() => !window.poseTracker.isRunning && !document.querySelector('#webcam').srcObject && window.smokeTracks.every((track) => track.readyState === 'ended'));
       assert.equal(await page.evaluate(() => window.performanceMonitor.active), false);
+      if (cycle === 1) {
+        await page.waitForFunction(() => window.game.registry.get('controlMode') === 'keyboard');
+        assert.match(await page.locator('#state-val').textContent(), /KEYBOARD TEST/);
+        assert.equal(await page.locator('#jump-height').textContent(), '—');
+        await page.getByRole('button', { name: 'Use camera controls', exact: true }).click();
+        await page.getByRole('button', { name: 'Start camera', exact: true }).waitFor();
+      }
     }
     assert.deepEqual(failedAssets, []);
     assert.deepEqual(external, []);
     assert.deepEqual(errors, []);
-    console.log('PASS: production Pose/Camera constructors, local model/WASM inference, permission/no-device/busy fallbacks, three stop/retry cycles, ended tracks and zero external requests or unhandled errors. Generated canvas stream; no human accuracy or hardware benchmark claim.');
+    console.log('PASS: production Pose/Camera constructors, local model/WASM inference, permission/no-device/busy fallbacks, three stop/retry cycles including keyboard mode, ended tracks and zero external requests or unhandled errors. Generated canvas stream; no human accuracy or hardware benchmark claim.');
   } catch (error) {
     if (page && !page.isClosed()) console.error('Model status:', await page.locator('#state-val').textContent().catch(() => 'unavailable'));
     throw error;

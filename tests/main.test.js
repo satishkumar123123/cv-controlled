@@ -82,6 +82,61 @@ beforeEach(async () => {
 });
 afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
+const buttonClick = (label) => elements.find((node) => node.textContent === label)
+  .addEventListener.mock.calls.find(([event]) => event === 'click')[1];
+
+it('stops capture for keyboard testing and rejects late pose/telemetry callbacks', async () => {
+  for (let t = 0; t <= 200; t += 20) feed(t);
+  app.tracker.isRunning = true;
+  app.tracker.stop = vi.fn(async () => { app.tracker.isRunning = false; });
+  await buttonClick('Keyboard test mode')();
+  expect(app.tracker.stop).toHaveBeenCalledOnce();
+  expect(app.game.registry.get('controlMode')).toBe('keyboard');
+  expect(app.game.registry.get('poseTrackingValid')).toBe(false);
+  expect(app.scene.restartGame).toHaveBeenCalledOnce();
+  expect(elements.find((node) => node.textContent === 'Start camera').disabled).toBe(true);
+  app.tracker.callbacks.onStreamStateChange({ active: true });
+  app.tracker.callbacks.onCalibrationComplete(baseline);
+  app.tracker.callbacks.onStatusChange('Tracking — calibrated');
+  for (let t = 220; t <= 1000; t += 20) feed(t, points(0, true));
+  expect(app.scene.duck).not.toHaveBeenCalled();
+  expect(app.scene.jump).not.toHaveBeenCalled();
+  expect(text('state-val')).toContain('KEYBOARD TEST');
+  expect(text('knee-angle')).toBe('—');
+  expect(text('ankle-bilateral')).toBe('— / —');
+  expect(window.performanceMonitor.getSummary()).toMatchObject({ processedFrames: 0, acceptedActions: 0, averageInferenceMs: null, averageActionLatencyMs: null });
+  expect(window.actionRecorder.getReport().completedActions).toEqual([]);
+});
+
+it('returns from keyboard testing with a disarmed camera controller and cleared calibration', async () => {
+  await buttonClick('Keyboard test mode')();
+  app.game.events.emit('runner:restartRequested', { recalibrate: true });
+  expect(app.tracker.recalibrate).not.toHaveBeenCalled();
+  await buttonClick('Use camera controls')();
+  expect(app.game.registry.get('controlMode')).toBe('camera');
+  expect(app.game.registry.get('poseBaseline')).toBeNull();
+  expect(app.game.registry.get('poseTrackingValid')).toBe(false);
+  expect(window.gestureClassifier.metrics).toMatchObject({ armed: false, valid: false });
+  expect(app.scene.setControllerStatus).toHaveBeenLastCalledWith(false, false, expect.any(String));
+  expect(elements.find((node) => node.textContent === 'Start camera').disabled).toBe(false);
+  expect(text('state-val')).toContain('Start camera');
+});
+
+it('serializes keyboard mode changes while camera cleanup is pending', async () => {
+  let finish;
+  app.tracker.stop = vi.fn(() => new Promise((resolve) => { finish = resolve; }));
+  const click = buttonClick('Keyboard test mode');
+  const pending = click();
+  expect(elements.find((node) => node.textContent === 'Use camera controls').disabled).toBe(true);
+  await click();
+  expect(app.tracker.stop).toHaveBeenCalledOnce();
+  expect(app.game.registry.get('controlMode')).toBe('camera');
+  finish();
+  await pending;
+  expect(app.game.registry.get('controlMode')).toBe('keyboard');
+  expect(app.scene.restartGame).toHaveBeenCalledOnce();
+});
+
 it('lets the user cancel pending camera startup and immediately retry', async () => {
   const button = elements.find((node) => node.textContent === 'Start camera');
   const click = button.addEventListener.mock.calls.find(([name]) => name === 'click')[1];

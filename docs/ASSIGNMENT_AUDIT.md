@@ -1,12 +1,13 @@
 # Assignment compliance and evidence
 
 This review uses the complete assignment and the supplied
-`squat-depth-reference.jpg`. Its four hip/knee bands match the implementation
+[squat reference image](assets/squat-depth-reference.jpg). Its four hip/knee bands match the implementation
 exactly. Software checks and human measurement validation are reported separately.
 
 | Requirement | Implementation / evidence | Validation status |
 | --- | --- | --- |
 | Playable Phaser runner with jump/duck obstacles | `GameScene.js`; real Arcade collision and five-minute simulation checks | Automated |
+| Evaluator quick-start / webcam-free fallback | Explicit clone destination, Node/shell prerequisites, opt-in Space/Down/R mode; capture stopped and pose metrics cleared | Unit and browser regression checks; camera remains the default |
 | One webcam and documented model | MediaPipe Pose GHUM Lite; 640×480 requested; local WASM/model assets | Runtime integration checked with a generated camera |
 | One jump per movement / held duck | Debounce, neutral rearm, continuous `desiredDuckState`, ground-collider reconciliation | FSM/regression/browser fixtures |
 | Neutral, sway, head motion, landing and duck-rise rejection | Bilateral feet plus hip velocity; 250 ms minimum cooldown plus neutral recovery | Deterministic fixtures; human rates pending |
@@ -23,9 +24,9 @@ exactly. Software checks and human measurement validation are reported separatel
 | Empirical target-laptop performance | Protocol in README; hardware notes and downloadable session report | **Pending a physical-device run** |
 | Modular source and technical defense | Vision, classifier, analytics, UI, Phaser and desktop modules | Source review and README |
 | Working desktop delivery | Electron entry point, local model assets, isolated renderer and platform packaging commands | Source and packaged Linux smoke checks passed; Windows/macOS require native evaluation |
-| Automated logic/analytics tests | 206/206 Vitest tests across 8 suites; actual Phaser, production-model and Electron checks | Passed locally; reproducible CI included |
+| Automated logic/analytics tests | 214/214 Vitest tests across 8 suites (206 original + 8 keyboard regressions); actual Phaser, production-model and Electron checks | Reproducible commands and CI linked from README |
 | Manual evaluation at different speeds/users | Reproduction matrix and blank observation CSV below | **Pending human observation; no invented outcomes** |
-| Short demo video (optional) | Recording checklist in manual protocol | **Pending physical-webcam recording** |
+| Short demo video (optional) | Prominent README placeholder and recording checklist in manual protocol | **Pending physical-webcam recording; placeholder is not a recording** |
 
 The implementation is ready for physical evaluation. A passing synthetic test
 suite cannot establish real-person accuracy or turn target performance values

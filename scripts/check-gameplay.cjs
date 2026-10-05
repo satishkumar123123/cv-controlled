@@ -142,11 +142,17 @@ mkdirSync(OUTPUT, { recursive: true });
       const displayCount = s.children.list.length;
       const keyListeners = s.input.keyboard.listenerCount('keydown-SPACE');
       const rListeners = s.input.keyboard.listenerCount('keydown-R');
+      const downListeners = s.input.keyboard.listenerCount('keydown-DOWN');
+      const releaseListeners = s.input.keyboard.listenerCount('keyup-DOWN');
+      const pointerListeners = s.input.listenerCount('pointerdown');
       const restartListeners = s.game.events.listenerCount('runner:restartRequested');
       for (let i = 0; i < 40; i++) fresh();
       check(s.children.list.length === displayCount && s.obstacles.getLength() === 8 &&
         s.input.keyboard.listenerCount('keydown-SPACE') === keyListeners &&
         s.input.keyboard.listenerCount('keydown-R') === rListeners &&
+        s.input.keyboard.listenerCount('keydown-DOWN') === downListeners &&
+        s.input.keyboard.listenerCount('keyup-DOWN') === releaseListeners &&
+        s.input.listenerCount('pointerdown') === pointerListeners &&
         s.game.events.listenerCount('runner:restartRequested') === restartListeners,
         '40 restarts preserve pool, display list and listener counts');
 
@@ -246,6 +252,58 @@ mkdirSync(OUTPUT, { recursive: true });
     await page.waitForFunction(() => window.game?.scene.getScene('GameScene')?.overlay);
     assert.ok(await page.evaluate(() => window.game.scene.getScene('GameScene').highScore) >= results.highScore);
     console.log('PASS: high score survives page reload');
+    await page.getByRole('button', { name: 'Keyboard test mode', exact: true }).click();
+    await page.waitForFunction(() => window.game.registry.get('controlMode') === 'keyboard' && window.game.scene.getScene('GameScene').runState === 'RUNNING');
+    assert.equal(await page.evaluate(() => window.poseTracker.isRunning), false);
+    await page.evaluate(() => { window.game.scene.getScene('GameScene')._distanceUntilSpawn = Infinity; });
+    await page.keyboard.down('Space');
+    await page.waitForFunction(() => window.game.scene.getScene('GameScene').player.body.velocity.y < -100);
+    await page.waitForFunction(() => window.game.scene.getScene('GameScene')._isGrounded() && !window.game.scene.getScene('GameScene')._jumpActive);
+    await page.keyboard.down('Space'); // Repeated keydown while still held.
+    const frame = await page.evaluate(() => window.game.loop.frame);
+    await page.waitForFunction((previous) => window.game.loop.frame > previous + 1, frame);
+    assert.equal(await page.evaluate(() => window.game.scene.getScene('GameScene')._isGrounded()), true);
+    await page.keyboard.up('Space');
+    await page.keyboard.down('ArrowDown');
+    await page.waitForFunction(() => window.game.scene.getScene('GameScene').player.body.height === 28);
+    await page.keyboard.press('Space');
+    assert.equal(await page.evaluate(() => window.game.scene.getScene('GameScene').player.body.velocity.y), 0);
+    await page.locator('#hardware-notes').focus();
+    await page.keyboard.up('ArrowDown');
+    await page.waitForFunction(() => window.game.scene.getScene('GameScene').player.body.height === 60);
+    await page.keyboard.press('Space');
+    assert.equal(await page.evaluate(() => window.game.scene.getScene('GameScene').player.body.velocity.y), 0);
+    await page.locator('#game-container canvas').click({ position: { x: 30, y: 100 } });
+    await page.keyboard.down('ArrowDown');
+    await page.waitForFunction(() => window.game.scene.getScene('GameScene').isDucking);
+    await page.evaluate(() => window.game.events.emit('blur'));
+    assert.equal(await page.evaluate(() => window.game.scene.getScene('GameScene').runState), 'PAUSED');
+    assert.equal(await page.evaluate(() => window.game.scene.getScene('GameScene').desiredDuckState), false);
+    await page.keyboard.up('ArrowDown');
+    await page.keyboard.press('Space');
+    await page.waitForFunction(() => window.game.scene.getScene('GameScene').player.body.velocity.y < -100);
+    await page.keyboard.press('r');
+    await page.waitForFunction(() => window.game.scene.getScene('GameScene').runState === 'RUNNING' && window.game.scene.getScene('GameScene')._isGrounded());
+    assert.match(await page.locator('#state-val').textContent(), /KEYBOARD TEST/);
+    assert.equal(await page.locator('#knee-angle').textContent(), '—');
+    assert.equal(await page.locator('#action-latency').textContent(), '—');
+    assert.equal(await page.evaluate(() => window.performanceMonitor.getSummary().acceptedActions), 0);
+    await page.screenshot({ path: OUTPUT + '/runner-keyboard.png', fullPage: true });
+    for (let i = 0; i < 5; i++) {
+      await page.getByRole('button', { name: 'Use camera controls', exact: true }).click();
+      await page.waitForFunction(() => window.game.registry.get('controlMode') === 'camera');
+      await page.getByRole('button', { name: 'Keyboard test mode', exact: true }).click();
+      await page.waitForFunction(() => window.game.registry.get('controlMode') === 'keyboard');
+    }
+    await page.getByRole('button', { name: 'Use camera controls', exact: true }).click();
+    await page.waitForFunction(() => window.game.scene.getScene('GameScene').runState === 'WAITING');
+    await page.locator('#game-container canvas').click({ position: { x: 30, y: 100 } });
+    await page.keyboard.press('Space');
+    await page.keyboard.press('ArrowDown');
+    assert.equal(await page.evaluate(() => window.game.scene.getScene('GameScene').runState), 'WAITING');
+    assert.equal(await page.evaluate(() => window.game.registry.get('poseTrackingValid')), false);
+    assert.equal(await page.evaluate(() => window.game.scene.getScene('GameScene').obstacles.getLength()), 8);
+    console.log('PASS: webcam-free Space jump, held Down/release, repeat rejection, blur recovery, R restart, mode isolation and no invented pose metrics');
     await page.evaluate(() => {
       const s = window.game.scene.getScene('GameScene');
       s.setControllerStatus(true, true); s.gameOver();
@@ -277,6 +335,9 @@ mkdirSync(OUTPUT, { recursive: true });
     });
     assert.equal(await page.evaluate(() => window.game.scene.getScene('GameScene').input.keyboard.listenerCount('keydown-SPACE')), 1);
     assert.equal(await page.evaluate(() => window.game.scene.getScene('GameScene').input.keyboard.listenerCount('keydown-R')), 1);
+    assert.equal(await page.evaluate(() => window.game.scene.getScene('GameScene').input.keyboard.listenerCount('keydown-DOWN')), 1);
+    assert.equal(await page.evaluate(() => window.game.scene.getScene('GameScene').input.keyboard.listenerCount('keyup-DOWN')), 1);
+    assert.equal(await page.evaluate(() => window.game.scene.getScene('GameScene').input.listenerCount('pointerdown')), 1);
     console.log('PASS: scene shutdown/recreation cleans up listeners and bodies');
     // Exercise the new browser frame callback with an actual video source. This
     // is a generated canvas stream, NOT a webcam/model performance benchmark.

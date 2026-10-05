@@ -75,5 +75,9 @@
       "target": "zip",
       "category": "Game"
     }
+  },
+  "author": "satishkumar123123",
+  "engines": {
+    "node": ">=22"
   }
 }

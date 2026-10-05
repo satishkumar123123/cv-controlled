@@ -91,6 +91,84 @@ describe('release restart controls', () => {
   });
 });
 
+describe('evaluator keyboard fallback', () => {
+  const key = (code, extra = {}) => ({ code, preventDefault: vi.fn(), target: { tagName: 'CANVAS' }, ...extra });
+  const manual = () => {
+    const scene = sceneFixture();
+    scene.registry = new Map([['controlMode', 'keyboard']]);
+    return scene;
+  };
+  it('keeps jump/duck keys inactive in the default camera mode', () => {
+    const scene = sceneFixture();
+    scene._onRestartKey(key('Space'));
+    scene._onDuckKey(key('ArrowDown'));
+    expect(scene.player.body.velocity.y).toBe(0);
+    expect(scene.desiredDuckState).toBe(false);
+    expect(scene.player.body.height).toBe(60);
+  });
+  it('jumps once per press and reconciles a held Down key when landing', () => {
+    const scene = manual();
+    scene._onRestartKey(key('Space'));
+    expect(scene.player.body.velocity.y).toBe(-600);
+    scene._onRestartKey(key('Space', { repeat: true }));
+    scene.player.body.reset(110, 330);
+    scene.player.body.setVelocityY(300);
+    scene._onDuckKey(key('ArrowDown'));
+    expect(scene.desiredDuckState).toBe(true);
+    expect(scene.isDucking).toBe(false);
+    scene.player.body.reset(110, 410);
+    scene.player.body.touching.down = true;
+    scene.update(0, 16);
+    expect(scene.isDucking).toBe(true);
+    expect(scene.player.body.height).toBe(28);
+    scene._onRestartKey(key('Space'));
+    expect(scene.player.body.velocity.y).toBe(0);
+  });
+  it('releases held duck even when keyup arrives over a focused input', () => {
+    const scene = manual();
+    scene._onDuckKey(key('ArrowDown'));
+    expect(scene.player.body.height).toBe(28);
+    scene._onDuckRelease(key('ArrowDown', { target: { tagName: 'INPUT' } }));
+    for (let t = 0; t < 120; t += 16) scene.update(t, 16);
+    expect(scene.desiredDuckState).toBe(false);
+    expect(scene.player.body.height).toBe(60);
+    expect(scene.player.body.bottom).toBe(440);
+  });
+  it('clears held input on blur and resumes only on a fresh keypress', () => {
+    const scene = manual();
+    scene._onDuckKey(key('ArrowDown'));
+    scene._onBlur();
+    expect(scene.runState).toBe('PAUSED');
+    expect(scene.desiredDuckState).toBe(false);
+    scene._onDuckKey(key('ArrowDown', { repeat: true }));
+    expect(scene.runState).toBe('PAUSED');
+    scene._onRestartKey(key('Space'));
+    expect(scene.runState).toBe('RUNNING');
+    expect(scene.player.body.velocity.y).toBe(-600);
+  });
+  it('restarts keyboard runs with R and preserves browser shortcuts, inputs and repeat rejection', () => {
+    const scene = manual();
+    scene.score = 123;
+    for (const extra of [{ repeat: true }, { ctrlKey: true }, { metaKey: true }, { altKey: true },
+      { target: { tagName: 'INPUT' } }, { target: { tagName: 'BUTTON' } }, { target: { isContentEditable: true } }]) {
+      scene._onRestartKey(key('KeyR', extra));
+      scene._onDuckKey(key('ArrowDown', extra));
+    }
+    expect(scene.score).toBe(123);
+    expect(scene.desiredDuckState).toBe(false);
+    scene._onRestartKey(key('KeyR'));
+    expect(scene.score).toBe(0);
+    expect(scene.runState).toBe('RUNNING');
+    expect(scene.invulnerableUntil).toBe(1500);
+    scene._onRestartKey(key('Space', { repeat: true }));
+    expect(scene.player.body.velocity.y).toBe(0);
+    scene.gameOver();
+    scene._onRestartKey(key('Space'));
+    expect(scene.runState).toBe('RUNNING');
+    expect(scene.player.body.velocity.y).toBe(0); // Restart never also jumps.
+  });
+});
+
 describe('audit bug 1: held duck reconciles on virtual landing', () => {
   it('remembers a rejected airborne duck and applies its hitbox without another edge event', () => {
     const scene = sceneFixture();
