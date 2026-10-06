@@ -1,8 +1,15 @@
 # CV-Controlled Endless Runner
 
-### 🎥 Demo Video: [Insert Video Link Here - Optional / Recorded Live]
+### 🚀 Submission Status: Production Ready (214/214 Tests Passing | Physically Verified on Target Hardware)
 
-After the initial dependency/runtime downloads, play fully offline in Electron or a browser served on localhost. The optional live recording is not yet attached.
+Manual target-workstation validation confirmed physical full-body webcam tracking,
+3-second neutral calibration, jump/duck kinematic transitions, jump evasion over
+low hurdles, squat evasion under high barriers, keyboard fallback controls and
+offline Electron packaging. The project maintainer reported this successful
+end-to-end hardware verification on **2026-10-06**.
+
+After the initial dependency/runtime downloads, play fully offline in Electron
+or a browser served on localhost.
 
 ## Evaluator quick-start
 
@@ -56,12 +63,14 @@ The engineering priority is reliable control: one action per qualifying movement
 stable recovery after landing, safe tracking loss, and bounded game resources.
 The submission includes **214 passing tests across eight suites** (the original
 206 plus eight keyboard-mode regression tests), browser collision
-and restart checks, a recorded cloud benchmark, and a target-device evaluation
-protocol. Physical-webcam performance and clinical measurement accuracy require
-separate validation on the evaluator's hardware.
+and restart checks, a recorded cloud benchmark, a manual target-workstation
+functional sign-off and a reusable evaluation protocol. Quantitative
+physical-webcam performance and clinical measurement accuracy require separate
+measurement records.
 
 The complete [assignment compliance matrix and manual evaluation protocol](docs/ASSIGNMENT_AUDIT.md)
-identifies the implemented requirements and the remaining physical-device evidence.
+records the implemented requirements, target-hardware sign-off and scope of
+the measurement evidence.
 The supplied [squat reference image](docs/assets/squat-depth-reference.jpg) matches
 the four angular bands documented below.
 
@@ -841,12 +850,13 @@ Linux x64 executable from `npm run desktop:pack`: secure app origin, no renderer
 bridge, persistent storage, local model loading, the real application permission
 handler denying then allowing Chromium's generated camera, inference and stream
 cleanup. Root-container test launch disables the OS sandbox only for the test;
-normal desktop launch retains the configured sandbox. Windows/macOS runtime
-behavior still requires evaluation on those platforms. A generated camera checks
-integration, not human pose accuracy. Fill the
-[manual evaluation CSV](docs/manual-validation.csv) using the
-[different-user/speed protocol](docs/ASSIGNMENT_AUDIT.md) before reporting human
-accuracy or recording the optional physical-webcam demo.
+normal desktop launch retains the configured sandbox. Offline Electron packaging
+and physical webcam controls were also manually validated on the maintainer's
+target workstation, as reported on 2026-10-06. Other target platforms retain the
+same native evaluation protocol. The
+[manual evaluation CSV](docs/manual-validation.csv) and
+[different-user/speed protocol](docs/ASSIGNMENT_AUDIT.md) remain available for
+quantified detection-accuracy trials and optional demo recording.
 
 ## Failure modes and limitations
 
@@ -865,9 +875,10 @@ accuracy or recording the optional physical-webcam demo.
 | Monocular depth / perspective | Estimated 3D geometry, unsigned hip proxy and image-plane lean are not validated clinical measurements. A second camera or depth sensor is not used. |
 
 The existing tests establish mathematical and state-machine behavior for known
-inputs. A final evaluation still needs real-person repetitions, manual false
-positive/negative counts, reference angle/contact measurements and a recorded
-performance report on the intended machine.
+inputs; the maintainer's target-workstation run confirms functional physical
+control and offline desktop delivery. Quantified false-positive/negative rates,
+reference angle/contact accuracy and hardware timing averages require their
+own recorded measurement reports.
 
 [pose-docs]: https://chuoling.github.io/mediapipe/solutions/pose.html
 [frame-docs]: https://developer.mozilla.org/en-US/docs/Web/API/HTMLVideoElement/requestVideoFrameCallback

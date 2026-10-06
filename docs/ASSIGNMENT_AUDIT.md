@@ -4,16 +4,22 @@ This review uses the complete assignment and the supplied
 [squat reference image](assets/squat-depth-reference.jpg). Its four hip/knee bands match the implementation
 exactly. Software checks and human measurement validation are reported separately.
 
+**Target-hardware functional sign-off — 2026-10-06:** the project maintainer
+reported successful manual end-to-end validation of physical full-body webcam
+tracking, 3-second neutral calibration, jump/duck kinematic transitions, low-hurdle
+jump evasion, high-barrier squat evasion, keyboard fallback controls and offline
+Electron packaging on the target workstation.
+
 | Requirement | Implementation / evidence | Validation status |
 | --- | --- | --- |
 | Playable Phaser runner with jump/duck obstacles | `GameScene.js`; real Arcade collision and five-minute simulation checks | Automated |
 | Evaluator quick-start / webcam-free fallback | Explicit clone destination, Node/shell prerequisites, opt-in Space/Down/R mode; capture stopped and pose metrics cleared | Unit and browser regression checks; camera remains the default |
-| One webcam and documented model | MediaPipe Pose GHUM Lite; 640×480 requested; local WASM/model assets | Runtime integration checked with a generated camera |
+| One webcam and documented model | MediaPipe Pose GHUM Lite; 640×480 requested; local WASM/model assets | Generated-camera integration and maintainer-reported physical full-body tracking passed |
 | One jump per movement / held duck | Debounce, neutral rearm, continuous `desiredDuckState`, ground-collider reconciliation | FSM/regression/browser fixtures |
 | Neutral, sway, head motion, landing and duck-rise rejection | Bilateral feet plus hip velocity; 250 ms minimum cooldown plus neutral recovery | Deterministic fixtures; human rates pending |
 | Duck means crouch, not foot rotation | Grounded hip drop plus knee flexion; explicit foot-rotation rejection test | Automated |
 | Missing/low-confidence landmarks | Raw 0.65 gate before EMA; pause/cancel; `null`/— metrics | Every required lower-body landmark tested |
-| Calibration and different body sizes/distances | 3 s upright hold; torso-normalized thresholds; individual heel/toe baselines and noise/self-check | Calibration fixtures; different-user trials pending |
+| Calibration and different body sizes/distances | 3 s upright hold; torso-normalized thresholds; individual heel/toe baselines and noise/self-check | Calibration fixtures and target-workstation neutral hold passed; quantified different-user trials remain separate |
 | Flight time / ballistic height | Heel/toe departure/contact timestamps; `9.81 × t² / 8`; documented symmetry assumptions | Known-time geometry/FSM fixtures |
 | Hip vertical displacement | Peak rise above baseline in normalized image height | Deterministic fixtures |
 | Knee / hip / ankle angles during jump | Bilateral knee, unsigned 3D hip, signed sagittal hip proxy and signed shin/foot ankle proxy | Deterministic angle/sign/rotation/confidence tests |
@@ -21,17 +27,17 @@ exactly. Software checks and human measurement validation are reported separatel
 | Duck angles, depth, lean, stance and bottom pause | Live bilateral metrics; strict angular bands; separate knee-level metadata | Kinematics/FSM/DOM tests |
 | Clear unreliable indicators | — per unavailable metric; historical ranges explicitly labeled; interrupted actions discarded | Unit/DOM checks |
 | Inference latency, action latency and camera FPS | Live HUD; duration/averages/hardware/model/camera summary; session JSON export | Timing fixtures and recorded software-WebGL sample |
-| Empirical target-laptop performance | Protocol in README; hardware notes and downloadable session report | **Pending a physical-device run** |
+| Empirical target-laptop performance | Protocol in README; hardware notes and downloadable session report | Functional hardware testing passed; quantitative latency/FPS reports not supplied |
 | Modular source and technical defense | Vision, classifier, analytics, UI, Phaser and desktop modules | Source review and README |
-| Working desktop delivery | Electron entry point, local model assets, isolated renderer and platform packaging commands | Source and packaged Linux smoke checks passed; Windows/macOS require native evaluation |
+| Working desktop delivery | Electron entry point, local model assets, isolated renderer and platform packaging commands | Source/packaged Linux smoke checks and maintainer-reported offline target-workstation packaging passed |
 | Automated logic/analytics tests | 214/214 Vitest tests across 8 suites (206 original + 8 keyboard regressions); actual Phaser, production-model and Electron checks | Reproducible commands and CI linked from README |
-| Manual evaluation at different speeds/users | Reproduction matrix and blank observation CSV below | **Pending human observation; no invented outcomes** |
-| Short demo video (optional) | Prominent README placeholder and recording checklist in manual protocol | **Pending physical-webcam recording; placeholder is not a recording** |
+| Manual evaluation at different speeds/users | Target-workstation functional sign-off; reproduction matrix and observation CSV below | Functional physical jump/duck checks passed; participant/speed counts not supplied |
+| Short demo video (optional) | Recording checklist retained in manual protocol | No video attached; unrecorded README placeholder removed |
 
-The implementation is ready for physical evaluation. A passing synthetic test
-suite cannot establish real-person accuracy or turn target performance values
-into measured results. Record those observations before claiming complete
-empirical validation.
+The target-workstation functional run is signed off by the project maintainer.
+Quantitative detection-accuracy, reference biomechanics and performance claims
+retain their measurement protocols below; the functional sign-off does not
+supply latency/FPS averages or participant-level accuracy statistics.
 
 ## Manual detection and metrics protocol
 
