@@ -45,6 +45,9 @@ export class ActionRecorder {
       ...Object.fromEntries(JOINT_METRICS.map((key) => [key, finite(metrics[key])]))
     };
     const action = metrics.state === 'JUMPING' ? 'JUMP' : metrics.state === 'DUCKING' ? 'DUCK' : null;
+    // A crouched preparation can become a confirmed jump without an intervening
+    // neutral pose. Do not lose that jump or label the unfinished crouch complete.
+    if (this.active && action && action !== this.active.action) this.active = null;
     if (!this.active && action) {
       const onset = action === 'JUMP' ? metrics.takeoffTimestamp : metrics.duckStartedAt;
       if (!Number.isFinite(onset) || onset > time) return;

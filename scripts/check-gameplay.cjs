@@ -180,6 +180,41 @@ mkdirSync(OUTPUT, { recursive: true });
       return { checks, score: s.score, highScore: s.highScore, spawns, pool: s.obstacles.getLength() };
     });
     console.log(JSON.stringify(results, null, 2));
+    // A natural crouched preparation must not suppress a real subsequent jump.
+    // Exercise the real classifier, main callbacks and Phaser body atomically.
+    await page.evaluate(() => {
+      const scene = window.game.scene.getScene('GameScene'), tracker = window.poseTracker;
+      const baseline = { baselineHipY: .45, baselineFootY: .87, torsoHeight: .25, shoulderWidth: .2 };
+      const points = (lift = 0, depth = 0) => {
+        const p = Array.from({ length: 33 }, () => ({ x: .5, y: .1, z: 0, visibility: 1 }));
+        for (const [l, r, y] of [[11, 12, .2], [23, 24, .45], [25, 26, .65], [27, 28, .85], [29, 30, .87], [31, 32, .87]]) {
+          p[l] = { x: .4, y: y - lift, z: 0, visibility: 1 };
+          p[r] = { x: .6, y: y - lift, z: 0, visibility: 1 };
+        }
+        for (const i of [11, 12, 23, 24]) p[i].y += depth;
+        for (const i of [25, 26]) { p[i].y += depth * .47; p[i].z -= depth * .87; }
+        return p;
+      };
+      scene.restartGame();
+      scene._distanceUntilSpawn = Infinity;
+      tracker.onCalibrationComplete(baseline);
+      let airborne = false;
+      for (let t = 0; t <= 2200; t += 20) {
+        const depth = t >= 300 && t < 700 ? .15 : t >= 700 && t < 800 ? .15 * (800 - t) / 100 : 0;
+        const lift = t >= 800 && t <= 1300 ? .14 * Math.sin(Math.PI * (t - 800) / 500) : 0;
+        tracker.onPoseUpdate(points(lift, depth), baseline, { timestamp: t, aspectRatio: 1 });
+        if (t === 600 && !scene.isDucking) throw Error('Preparation did not hold the crouch');
+        if (scene.player.body.velocity.y < -100) {
+          airborne = true;
+          if (scene.isDucking || scene.desiredDuckState || scene.player.body.height !== 60) throw Error('Jump retained duck hitbox');
+        }
+        scene.physics.world.update(t, 20);
+        scene.update(t, 20);
+        scene.physics.world.postUpdate();
+      }
+      if (!airborne || window.actionRecorder.getLast()?.action !== 'JUMP') throw Error('Countermovement jump was lost');
+    });
+    console.log('PASS: crouched preparation becomes one real Phaser jump with a standing hitbox and completed jump analytics.');
     // Reproduce the audited short physical jump -> valid held duck sequence
     // through the real classifier, main callbacks and Arcade physics together.
     await page.evaluate(() => {

@@ -164,7 +164,10 @@ const classifier = new GestureClassifier({
     // Do not queue physical actions until Phaser has created its player body.
     if (!scene?.player?.body) return;
     let accepted = false;
-    if (action === 'JUMP') accepted = scene.jump();
+    if (action === 'JUMP') {
+      if (context.fromDucking) scene.duck(false);
+      accepted = scene.jump();
+    }
     else if (action === 'DUCK_START') accepted = scene.duck(true);
     else if (action === 'DUCK_END') accepted = scene.duck(false);
     // Phaser commands mutate body/state synchronously. Exclude rejected commands,

@@ -15,7 +15,7 @@ Electron packaging on the target workstation.
 | Playable Phaser runner with jump/duck obstacles | `GameScene.js`; real Arcade collision and five-minute simulation checks | Automated |
 | Evaluator quick-start / webcam-free fallback | Explicit clone destination, Node/shell prerequisites, opt-in Space/Down/R mode; capture stopped and pose metrics cleared | Unit and browser regression checks; camera remains the default |
 | One webcam and documented model | MediaPipe Pose GHUM Lite; 640×480 requested; local WASM/model assets | Generated-camera integration and maintainer-reported physical full-body tracking passed |
-| One jump per movement / held duck | Debounce, neutral rearm, continuous `desiredDuckState`, ground-collider reconciliation | FSM/regression/browser fixtures |
+| One jump per movement / held duck | Debounce, neutral rearm, bounded confirmed crouch-to-jump transition, continuous `desiredDuckState`, ground-collider reconciliation | FSM/regression/browser fixtures |
 | Neutral, sway, head motion, landing and duck-rise rejection | Bilateral feet plus hip velocity; 250 ms minimum cooldown plus neutral recovery | Deterministic fixtures; human rates pending |
 | Duck means crouch, not foot rotation | Grounded hip drop plus knee flexion; explicit foot-rotation rejection test | Automated |
 | Missing/low-confidence landmarks | Raw 0.65 gate before EMA; pause/cancel; `null`/— metrics | Every required lower-body landmark tested |
@@ -30,7 +30,7 @@ Electron packaging on the target workstation.
 | Empirical target-laptop performance | Protocol in README; hardware notes and downloadable session report | Functional hardware testing passed; quantitative latency/FPS reports not supplied |
 | Modular source and technical defense | Vision, classifier, analytics, UI, Phaser and desktop modules | Source review and README |
 | Working desktop delivery | Electron entry point, local model assets, isolated renderer and platform packaging commands | Source/packaged Linux smoke checks and maintainer-reported offline target-workstation packaging passed |
-| Automated logic/analytics tests | 214/214 Vitest tests across 8 suites (206 original + 8 keyboard regressions); actual Phaser, production-model and Electron checks | Reproducible commands and CI linked from README |
+| Automated logic/analytics tests | 226/226 Vitest tests across 9 suites, including crouch-to-jump and metric-reset regressions; actual Phaser, production-model and Electron checks | Reproducible commands and CI linked from README |
 | Manual evaluation at different speeds/users | Target-workstation functional sign-off; reproduction matrix and observation CSV below | Functional physical jump/duck checks passed; participant/speed counts not supplied |
 | Short demo video (optional) | Recording checklist retained in manual protocol | No video attached; unrecorded README placeholder removed |
 
@@ -38,6 +38,12 @@ The target-workstation functional run is signed off by the project maintainer.
 Quantitative detection-accuracy, reference biomechanics and performance claims
 retain their measurement protocols below; the functional sign-off does not
 supply latency/FPS averages or participant-level accuracy statistics.
+
+## Current audit
+
+See [2026-10-21 audit and fixes](AUDIT_2026-10-21.md). The passing software tests
+and prior maintainer-reported functional run are not a substitute for recorded
+physical accuracy trials or target-hardware performance averages.
 
 ## Manual detection and metrics protocol
 

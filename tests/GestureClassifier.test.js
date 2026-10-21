@@ -178,12 +178,14 @@ describe('gesture sequences', () => {
     expect(actions).not.toHaveBeenCalled();
   });
 
-  it('does not emit simultaneous jump/duck events, even if an active duck leaves the ground', () => {
+  it('does not emit simultaneous jump/duck events when one foot leaves an active duck', () => {
     arm();
     sequence(220, 500, () => ducked());
     for (let t = 520; t <= 900; t += 20) {
       const before = actions.mock.calls.length;
-      feed(t, standing(0.1));
+      const p = standing(0.1);
+      p[30].y = p[32].y = baseline.baselineFootY;
+      feed(t, p);
       expect(actions.mock.calls.length - before).toBeLessThanOrEqual(1);
     }
     expect(actions.mock.calls.map(([action]) => action)).toEqual(['DUCK_START', 'DUCK_END']);

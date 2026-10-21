@@ -22,6 +22,7 @@ const DEFAULTS = Object.freeze({
   neutralKneeFlexion: 25, stillVelocity: 0.12,
   jumpDebounceMs: 35, duckDebounceMs: 120, exitDebounceMs: 80,
   landingDebounceMs: 30, cooldownMs: 250, neutralHoldMs: 120,
+  duckTakeoffWindowMs: 200,
   pauseDebounceMs: 120, pauseDepthTolerance: 0.03,
   maxFrameGapMs: 200, minFlightMs: 100, maxFlightMs: 2000, velocityTimeConstantMs: 60
 });
@@ -77,6 +78,8 @@ export class GestureClassifier {
     this._landingSince = null;
     this._jump = null;
     this._duck = null;
+    this._duckTakeoffSince = null;
+    this._jumpAfterDuckUntil = 0;
     this.t_takeoff = null;
     this.t_landing = null;
     this._cooldownUntil = 0;
@@ -239,16 +242,16 @@ export class GestureClassifier {
       }
     }
 
-    // Exactly one state branch per frame. Returning from duck/cooldown cannot
-    // evaluate a second action trigger during the same update.
+    // Exactly one state branch/event per frame. A genuine airborne takeoff may
+    // follow a crouched preparation; a grounded rise still cannot be a jump.
     switch (this.state) {
       case GestureState.NEUTRAL: {
         if (!this._armed) {
           if (this._heldNeutral(neutral, timestamp)) this._armed = true;
-          break;
+          if (!this._armed && timestamp >= this._jumpAfterDuckUntil) break;
         }
         const jump = airborne && this._upVelocity > c.jumpVelocity;
-        const duck = bothGround && drop > c.duckDrop && pose.kneeFlexion > c.duckKneeFlexion;
+        const duck = this._armed && bothGround && drop > c.duckDrop && pose.kneeFlexion > c.duckKneeFlexion;
         const kind = jump ? 'JUMP' : duck ? 'DUCK_START' : null;
         if (!kind) { this._candidate = null; break; }
         if (this._candidate?.kind !== kind) this._candidate = { kind, since: timestamp, peakY: hipY };
@@ -258,21 +261,18 @@ export class GestureClassifier {
         this._armed = false;
         this._neutralSince = null;
         if (jump) {
-          this.state = GestureState.JUMPING;
-          this.lastProvisionalAirborneTime = null;
-          this.t_takeoff = this._candidate.since; // First qualifying frame, not end of debounce.
-          this.t_landing = null;
-          this._jump = { peakY: this._candidate.peakY };
-          this._metrics.flightTime = null;
-          this._metrics.jumpHeight = null;
-          this._metrics.verticalDisplacement = Math.max(0, b.baselineHipY - this._jump.peakY);
+          this._startJump(timestamp);
         } else {
           this.state = GestureState.DUCKING;
+          this._jumpAfterDuckUntil = 0;
+          this._duckTakeoffSince = null;
+          this.t_takeoff = this.t_landing = null;
+          this._metrics.flightTime = this._metrics.jumpHeight = this._metrics.verticalDisplacement = null;
           this._duck = { startedAt: this._candidate.since, deepestY: hipY, pauseDepth: hipY, pauseStart: null, pauseTotal: 0 };
           this._metrics.pauseDuration = 0;
+          this._candidate = null;
+          this.onActionTrigger(kind, { source: 'pose', timestamp });
         }
-        this._candidate = null;
-        this.onActionTrigger(kind, { source: 'pose', timestamp });
         break;
       }
       case GestureState.JUMPING: {
@@ -296,7 +296,24 @@ export class GestureClassifier {
         break;
       }
       case GestureState.DUCKING: {
-        if (!bothGround) return this.invalidate('Feet left the ground during duck — action cancelled');
+        if (!bothGround) {
+          // A countermovement jump begins as a crouch. Give bilateral takeoff
+          // a bounded confirmation window, with the SAME velocity/clearance
+          // and debounce gates as a standing jump. Single-foot steps, spikes,
+          // missing landmarks and unconfirmed landings cannot dispatch JUMP.
+          this._duckTakeoffSince ??= timestamp;
+          this._exitSince = null;
+          if (timestamp - this._duckTakeoffSince > c.duckTakeoffWindowMs) {
+            return this.invalidate('Unconfirmed takeoff after crouch — action cancelled');
+          }
+          if (airborne && this._upVelocity > c.jumpVelocity) {
+            this._candidate ??= { kind: 'JUMP', since: timestamp, peakY: hipY };
+            this._candidate.peakY = Math.min(this._candidate.peakY, hipY);
+            if (timestamp - this._candidate.since >= c.jumpDebounceMs) this._startJump(timestamp, true);
+          } else this._candidate = null;
+          break;
+        }
+        if (this._duckTakeoffSince !== null) return this.invalidate('Unconfirmed flight returned to ground — action cancelled');
         this._updatePause(hipY, timestamp);
         if (bothGround && Math.abs(drop) <= c.neutralHipTolerance) {
           this._exitSince ??= timestamp;
@@ -305,6 +322,9 @@ export class GestureClassifier {
             this._duck = null;
             this._exitSince = null;
             this._neutralSince = null;
+            // The body may pass standing height just before takeoff. Permit
+            // only a verified jump here, not another crouch without rearming.
+            this._jumpAfterDuckUntil = timestamp + c.duckTakeoffWindowMs;
             this.onActionTrigger('DUCK_END', { source: 'pose', timestamp });
           }
         } else this._exitSince = null;
@@ -322,6 +342,23 @@ export class GestureClassifier {
         break;
     }
     return this._publish(true, null, { angleSource, upwardVelocity: this._upVelocity, neutral });
+  }
+
+  _startJump(timestamp, fromDucking = false) {
+    this.state = GestureState.JUMPING;
+    this._armed = false;
+    this._neutralSince = this._landingSince = this._exitSince = null;
+    this.lastProvisionalAirborneTime = null;
+    this.t_takeoff = this._candidate.since;
+    this.t_landing = null;
+    this._jump = { peakY: this._candidate.peakY };
+    this._duck = this._duckTakeoffSince = null;
+    this._jumpAfterDuckUntil = 0;
+    this._metrics.flightTime = this._metrics.jumpHeight = this._metrics.pauseDuration = null;
+    this._metrics.verticalDisplacement = Math.max(0, this.baseline.baselineHipY - this._jump.peakY);
+    this._candidate = null;
+    // One event switches the held crouch into a jump atomically in main.js.
+    this.onActionTrigger('JUMP', { source: 'pose', timestamp, fromDucking });
   }
 
   _heldNeutral(neutral, timestamp) {

@@ -1,12 +1,17 @@
 # CV-Controlled Endless Runner
 
-### 🚀 Submission Status: Production Ready (214/214 Tests Passing | Physically Verified on Target Hardware)
+### Submission status: implemented, with quantitative physical validation pending
 
 Manual target-workstation validation confirmed physical full-body webcam tracking,
 3-second neutral calibration, jump/duck kinematic transitions, jump evasion over
 low hurdles, squat evasion under high barriers, keyboard fallback controls and
 offline Electron packaging. The project maintainer reported this successful
 end-to-end hardware verification on **2026-10-06**.
+
+The automated checks verify software behavior; they do not prove 100% human
+detection accuracy. Target-machine latency/FPS exports with accepted actions and
+recorded trials across users/speeds are still required. See the
+[2026-10-21 audit](docs/AUDIT_2026-10-21.md) for fixes, evidence and remaining work.
 
 After the initial dependency/runtime downloads, play fully offline in Electron
 or a browser served on localhost.
@@ -61,8 +66,7 @@ and live inference/action timing.
 
 The engineering priority is reliable control: one action per qualifying movement,
 stable recovery after landing, safe tracking loss, and bounded game resources.
-The submission includes **214 passing tests across eight suites** (the original
-206 plus eight keyboard-mode regression tests), browser collision
+The submission includes **226 passing tests across nine suites**, browser collision
 and restart checks, a recorded cloud benchmark, a manual target-workstation
 functional sign-off and a reusable evaluation protocol. Quantitative
 physical-webcam performance and clinical measurement accuracy require separate
@@ -350,6 +354,8 @@ stateDiagram-v2
     LANDING_COOLDOWN --> NEUTRAL: 250 ms elapsed and neutral held
     NEUTRAL --> DUCKING: Grounded bend held, 120 ms
     DUCKING --> NEUTRAL: Hip returns, 80 ms
+    DUCKING --> JUMPING: Confirmed bilateral takeoff, 35 ms
+    DUCKING --> LANDING_COOLDOWN: Unconfirmed flight or tracking loss
 ```
 
 | Rule | Exact default condition |
@@ -358,20 +364,27 @@ stateDiagram-v2
 | Both feet airborne | All four heel/toe points rise more than max(0.12 H, T + 0.02 H) above their own baselines |
 | Provisional airborne | All four heel/toe points rise beyond T, even without sustained takeoff or sufficient hip speed |
 | Neutral/rearm | Both feet grounded, \|D\| ≤ 0.05, mean knee flexion < 25°, \|U\| ≤ 0.12, held for 120 ms |
-| Jump trigger | Airborne AND U > 0.6, sustained for 35 ms while armed |
+| Jump trigger | Airborne AND U > 0.6, sustained for 35 ms while armed, during a crouch-to-flight transition, or within 200 ms of duck release |
+| Crouch-to-flight confirmation | A maximum 200 ms window after losing bilateral ground contact; identical bilateral clearance, velocity and 35 ms debounce gates; unconfirmed contact/timeout cancels the action |
 | Landing | Either foot grounded, U ≤ 0.12, ≥100 ms since takeoff, contact sustained for 30 ms |
 | Landing cooldown | At least 250 ms **after confirmed landing**, plus stable neutral; no duck trigger in this state |
 | Provisional landing cooldown | First ground contact after provisional airborne observation starts the same 250 ms suppression and neutral-recovery gate; no jump event or flight metrics are invented |
 | Duck start | Both feet grounded, D > 0.15 AND mean knee flexion > 40°, sustained for 120 ms while armed |
-| Duck end | Both feet grounded and \|D\| ≤ 0.05 for 80 ms; rearm requires stable neutral again |
+| Duck end | Both feet grounded and \|D\| ≤ 0.05 for 80 ms; another duck requires stable neutral again; a verified jump is allowed for the next 200 ms |
 | Bottom pause | Hip within 0.03 H of deepest observed duck position and \|U\| ≤ 0.12 for at least 120 ms |
 | Invalid flight | Flight lasting >2000 ms, missing geometry, or a frame gap >200 ms discards incomplete flight metrics |
 
 The gap above adaptive contact tolerance and the 0.15/0.05 hip thresholds provide hysteresis.
 Exactly one state branch is evaluated per frame. `JUMPING` cannot trigger a duck
 or another jump. A landing knee bend remains recovery **even beyond 250 ms**
-until the user stands neutrally. Rising from a duck cannot immediately trigger a
-jump. Foot lift without upward hip velocity, head movement, sway and brief
+until the user stands neutrally. A grounded rise from a duck cannot trigger a
+jump. A real bilateral takeoff after crouched preparation can trigger one jump:
+the integration releases the virtual duck before applying the jump impulse, and
+the recorder starts a jump record without marking an unfinished crouch complete.
+This supports countermovement jumps without allowing another duck before neutral
+rearming. A preparatory crouch can already have issued DUCK_START before takeoff;
+intent cannot be inferred from a grounded crouch alone. Foot lift without upward
+hip velocity, head movement, sway and brief
 single-frame spikes do not meet the full trigger conditions.
 
 Takeoff time is the **first qualifying airborne/rising frame**, retained through
@@ -379,6 +392,9 @@ the debounce window. Landing time is the **first qualifying contact frame**,
 retained through its confirmation window. Their difference is the measured
 flight time. The peak hip rise includes the takeoff candidate frames and is
 `max(0, baselineHipY − minimumHipY)`, in normalized frame-height units.
+Starting a new crouch clears previous flight/height/displacement values; starting
+a new jump clears the previous crouch pause. Completed records remain explicitly
+labeled as history.
 Bottom pause accumulates qualified stationary segments at the deepest observed
 position; a substantially deeper position discards shallower pauses.
 
@@ -537,49 +553,19 @@ at eight obstacles; the live profiler stores at most 240 frame samples.
 
 ## Performance and latency profiling
 
-### Benchmark & Performance Table
+### Measured results and remaining evidence
 
-The following **user-supplied desktop reference profiles are unmeasured planning
-figures**. Their inference timings fit the respective capture-frame budgets;
-they are not empirically validated physical-desktop runs. No corresponding
-session exports, frame/action counts or heap traces were supplied. The existing
-measured cloud record remains below for provenance.
+The committed empirical record is the software-WebGL run below. It measured
+model inference and processing FPS, but recorded **zero accepted game actions**,
+so end-to-end action latency is **unavailable**. No physical-camera session export
+or completed participant/speed observation sheet is committed.
 
-| Metric | Standard USB/integrated webcam — 30 Hz capture | High-performance profile — 60 Hz capture with proposed GPU/WebGL worker |
-| --- | --- | --- |
-| Camera resolution / source rate | **640 × 480 @ 30 FPS** | **640 × 480 @ 60 FPS** |
-| Camera processing FPS (reference) | **29.8 FPS**, bounded by the 30 Hz capture clock | **58.6 FPS**, bounded by the 60 Hz capture clock |
-| Average model inference latency (reference) | **21.4 ms**, MediaPipe WebGL/WASM | **13.8 ms**, MediaPipe WebGL/WASM |
-| Capture-frame budget (`1000 / source FPS`) | **≈33.33 ms** | **≈16.67 ms** |
-| Nominal budget left after inference | **≈11.9 ms** for other per-frame work | **≈2.9 ms** for other per-frame work |
-| Average accepted-action latency (reference) | **42.1 ms**, triggering frame → inference/FSM processing → Phaser game update | **31.5 ms**, triggering frame → inference/FSM processing → Phaser game update |
-| Implementation status | Target for the current sequential, main-thread pipeline | Proposed worker configuration; **a GPU/WebGL worker is not implemented in this repository** |
-
-The remaining frame budget must accommodate filtering, drawing, classification
-and scheduling. Worker execution would require implementation and measurement;
-moving work to a worker alone does not guarantee either inference speed or FPS.
-Source FPS, completed-result processing FPS and rendering FPS are separate
-quantities. End-to-end action latency also includes time between the frame
-timestamp and processing, so it is not the per-frame service-time budget.
-
-| Shared environment / resource | Reference profile | Validation status / interpretation |
-| --- | --- | --- |
-| Hardware / OS | **Intel Core i7 (12th Gen) / Intel Iris Xe Graphics / Windows 11 (64-bit)** | Candidate environment, not a tested-machine record or a guarantee of either profile. Capture the exact CPU model, RAM, GPU/driver and browser/Electron versions in the local report. |
-| Test duration | **120 seconds per profile** | Planned measurement duration after warm-up; no completed 120 s local run is documented. |
-| JavaScript heap | **~140 MB** | Unmeasured reference value. Validate with comparable post-GC heap snapshots across restarts and the trial; WASM, GPU and process memory must be reported separately. |
-| Game resource bounds | **8 pooled obstacles**, stable display/listener counts | Verified separately by 40 restart cycles and a five-minute real-Phaser simulation. This establishes object reuse, not a measured 140 MB heap footprint. |
-
-Both action-latency references use the **debounce-completing frame → dispatch** boundary.
-Candidate-onset → dispatch additionally contains the **35 ms jump / 120 ms duck
-debounce**, sampling delay and EMA history. A single latency range cannot describe
-both boundaries. Fixed 60 Hz physics likewise does not guarantee 60 Hz rendering
-or pose processing.
-
-To replace these profiles with empirical local results, follow the benchmark
-protocol below using a 120 s measurement interval, enter the hardware notes and
-export a session JSON for each implemented configuration. Report inference latency
-and completed-result FPS from the same active interval, retain the action counts
-and timestamp source, and attach the separate heap trace.
+Earlier unmeasured desktop planning figures have been removed from this results
+section. There is no measured 30/60 FPS desktop result and no implemented GPU
+worker in this repository. Complete the target-machine protocol below, export
+session JSON and report the actual hardware, OS, resolution, model configuration,
+active duration, accepted action count and capture timestamp source. Do not fill
+missing measurements with estimates or unit-test timing.
 
 <details>
 <summary>Empirical cloud benchmark: measured software-WebGL comparator</summary>
@@ -785,6 +771,7 @@ blocks the browser's main thread.
 | Test file | Coverage |
 | --- | --- |
 | `tests/Kinematics.test.js` | 3D angles, knee/hip flexion, signed sagittal hip and ankle dorsi/plantarflexion, scale/rotation/translation invariance, squat boundaries/gaps/precedence, ballistic fixtures including 0.5 s, confidence and degenerate geometry |
+| `tests/AssignmentCompliance.test.js` | Crouched preparation and post-release takeoff at 30/60 FPS; grounded rise, one-foot movement, brief spike and occlusion rejection; new-action metric clearing |
 | `tests/GestureClassifier.test.js` | Jump → cooldown → neutral and duck → neutral sequences, landing-bend suppression, no simultaneous jump/duck, debounce, pause, visibility loss, timestamp gaps, world-coordinate selection, 30/60 FPS synthetic sampling |
 | `tests/PoseTracker.test.js` | Stillness calibration, raw visibility gate, EMA, canvas calls, camera failure/retry/cleanup, sequential scheduling, capture timing; hung startup/inference/disposal, bounded cancellation and late-session isolation |
 | `tests/PerformanceMonitor.test.js` | Known clock intervals, processing FPS, action/frame pairing, invalid samples, stale results, pauses, resets, bounded storage and hardware summaries |
@@ -813,12 +800,14 @@ repeat rejection, input focus, blur recovery, mode switches, camera-metric isola
 and cleanup of all added keyboard listeners.
 They also test a native video callback with a generated canvas stream and pair
 synthetic pose frames with accepted real Phaser actions and the performance HUD.
+The 2026-10-21 regression also exercises crouched preparation through a real
+Phaser jump and standing hitbox, plus completed jump analytics.
 Audit regressions exercise max-speed high-barrier collisions at three jump
 timings, same-step landing/duck/obstacle ordering, and a short physical jump
 followed by a rejected duck edge through the real classifier/main/Phaser stack.
 These are integration checks, **not webcam/model inference benchmarks**.
 
-Current verification on 2026-10-05: **214 Vitest tests passed across eight suites**;
+Historical verification on 2026-10-05: **214 Vitest tests passed across eight suites**;
 production build and the browser suite passed with no unhandled JavaScript errors.
 Environment: Linux
 6.18.44 x86_64 container, AMD EPYC 9V74 host-reported CPU, 8 available logical

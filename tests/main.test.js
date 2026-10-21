@@ -85,6 +85,21 @@ afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); vi.restoreAllMocks();
 const buttonClick = (label) => elements.find((node) => node.textContent === label)
   .addEventListener.mock.calls.find(([event]) => event === 'click')[1];
 
+it('releases the held virtual crouch before dispatching a confirmed countermovement jump', () => {
+  for (let t = 0; t <= 200; t += 20) feed(t);
+  for (let t = 220; t <= 600; t += 20) feed(t, points(0, true));
+  expect(app.game.registry.get('gestureState')).toBe('DUCKING');
+  app.scene.duck.mockClear();
+  for (let t = 620; t <= 1100; t += 20) feed(t, points(.14 * Math.sin(Math.PI * (t - 620) / 500)));
+  expect(app.scene.jump).toHaveBeenCalledOnce();
+  expect(app.scene.duck).toHaveBeenCalledOnce();
+  expect(app.scene.duck).toHaveBeenCalledWith(false);
+  expect(app.scene.duck.mock.invocationCallOrder[0]).toBeLessThan(app.scene.jump.mock.invocationCallOrder[0]);
+  expect(app.scene.desiredDuckState).toBe(false);
+  expect(window.performanceMonitor.getSummary().actions.JUMP).toBe(1);
+  expect(window.performanceMonitor.getSummary().actions.DUCK_END).toBe(0);
+});
+
 it('stops capture for keyboard testing and rejects late pose/telemetry callbacks', async () => {
   for (let t = 0; t <= 200; t += 20) feed(t);
   app.tracker.isRunning = true;
